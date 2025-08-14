@@ -1,0 +1,2266 @@
+---
+title: "SGCE Interneuron"
+output: html_notebook
+---
+# Setup
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+
+#LIBLOC<-"D:/R4.2"
+#LIBLOC<-"C:/Users/Zongze Li/Documents/R/win-library/4.2"
+#LIBLOC<-"C:/Users/c1629716/AppData/Local/R/win-library/4.2"
+LIBLOC<-"C:/Program Files/R/R-4.3.0/library"
+.libPaths(LIBLOC)
+
+#update.packages(LIBLOC)
+#BiocManager::install(version = "3.18")
+	
+library(rlang,lib.loc = LIBLOC)
+library(matrixStats,lib.loc = LIBLOC)
+library(lifecycle,lib.loc = LIBLOC)
+library(Rcpp,lib.loc = LIBLOC)
+library(cli,lib.loc = LIBLOC)
+
+BASIC <- c("devtools","BiocManager","remotes")
+
+PACKAGES <- c("tidyverse","corrplot","data.table","Hmisc","plyr","dplyr","GGally","ggnetwork","ggplot2","ggpubr","ggrepel","ggthemes","network","openxlsx","reshape2","Seurat","stringr","tidyr","rlist","parallel","metap","readr","rliger","ggvenn","ggdendro","feather","ComplexUpset","doParallel","igraph","treemapify","UpSetR",'Matrix.utils',"ggforce","cluster","factoextra","rstatix","car","ggrain")
+
+BIOCMANAGER_PACKAGES<-c("scater","scmap","edgeR",'SingleCellExperiment',"tximeta","tximport","biomaRt","DESeq2","multtest","scran","scMerge","harmony","AUCell", "RcisTarget","GENIE3","PCAtools",'BiocGenerics', 'DelayedArray', 'DelayedMatrixStats','limma', 'S4Vectors','SingleCellExperiment','SummarizedExperiment', 'batchelor', 'fgsea',"GO.db", 'lme4', "genefilter", 'HDF5Array','terra', 'ggrastr',"clusterProfiler","org.Hs.eg.db","EWCE","velociraptor")
+
+GITHUB_PACKAGES<-c('cole-trapnell-lab/leidenbase',"ctlab/fgsea","satijalab/seurat-wrappers","montilab/hypeR",'cole-trapnell-lab/monocle3',"aertslab/SCopeLoomR","aertslab/SCENIC","davidsjoberg/ggsankey","neurogenomics/MAGMA_Celltyping","velocyto-team/velocyto.R")
+
+GITHUB_PACKAGES_LOAD<-c("leidenbase","fgsea","SeuratWrappers","monocle3","SCopeLoomR","SCENIC","ggsankey","MAGMA.Celltyping","velocyto.R")
+
+for (x in BASIC){
+  if (!require(x,lib.loc=LIBLOC,character.only = TRUE)){
+	install.packages(x,lib=LIBLOC)
+	library(x,lib.loc=LIBLOC,character.only = TRUE)}}
+	
+for (x in PACKAGES){
+  if (!require(x,lib.loc=LIBLOC,character.only = TRUE)){
+	install.packages(x,lib=LIBLOC)
+	library(x,lib.loc=LIBLOC,character.only = TRUE)}}
+
+for (x in BIOCMANAGER_PACKAGES){
+  if (!require(x,lib.loc=LIBLOC,character.only = TRUE)){
+      BiocManager::install(x,lib=LIBLOC)
+	  library(x,lib.loc=LIBLOC,character.only = TRUE)}}
+
+'tryCatch({for (x in GITHUB_PACKAGES){
+  if (!require(unlist(strsplit(x,split="/"))[2],character.only = TRUE)){
+	  devtools::install_github(x)
+	  library(x,lib.loc=LIBLOC,character.only = TRUE)}}},error=function(e){})'
+
+for (x in GITHUB_PACKAGES_LOAD){require(x,lib.loc=LIBLOC,character.only = TRUE)}
+
+rm(BASIC,PACKAGES,BIOCMANAGER_PACKAGES,GITHUB_PACKAGES,GITHUB_PACKAGES_LOAD,x)
+
+colour_palette<-c(ggthemes_data$tableau$`color-palettes`$regular$`Tableau 20`$value,"#CA0AFF","#10DFDF",ggthemes_data$tableau$`color-palettes`$regular$`Color Blind`$value,ggthemes_data$excel$classic$fill,ggthemes_data$calc$colors$value)
+
+Sys.setenv("ONEDRIVE"=str_replace(Sys.getenv("ONEDRIVE"),"The Open","Cardiff"))
+
+PROJECT_DIR<-paste0(Sys.getenv("OneDrive"),"/Postdoc/Project/RNAseq/SGCE scRNAseq")
+COUNT_INPUTDIR<-paste0(PROJECT_DIR,"/Raw count")
+
+ANALYSIS_OUTPUTDIR<-paste0(PROJECT_DIR,"/1st")
+FIGURE_OUTPUTDIR<-paste0(ANALYSIS_OUTPUTDIR,"/Figures")
+SAVE_DIR<-paste0(ANALYSIS_OUTPUTDIR,"/Saved RData")
+
+if (!dir.exists(ANALYSIS_OUTPUTDIR))
+  dir.create(ANALYSIS_OUTPUTDIR)
+
+if (!dir.exists(FIGURE_OUTPUTDIR))
+  dir.create(FIGURE_OUTPUTDIR)
+
+if (!dir.exists(SAVE_DIR))
+  dir.create(SAVE_DIR)
+
+
+# load gene info
+gene_info<-fread(file=paste0(PROJECT_DIR,"/gene_info.csv"),data.table=FALSE)
+gene_info$Gene_ID<-paste(str_split(gene_info$Gene_ID,"_",simplify=TRUE)[,2],str_split(gene_info$Gene_ID,"_",simplify=TRUE)[,1],sep="-")
+
+# Load SampleMetadata
+sample_metadata<-read.xlsx(xlsxFile=paste0(PROJECT_DIR,"/SampleMetadata.xlsx"))
+
+# selected markers
+temp_feature<-data.frame(Gene=c(
+  "CD44","ATF3","S100B","GFAP","SOX9","HES1","VIM","EGFR","NFIA","NFIB","NFIX","AQP4","SLC1A2","SLC1A3","GJA1","GJB6","S100A16","S100A13",
+  "ASCL1","NEUROG1","NEUROG2","NEUROD1","NEUROD2","NEUROD4","NEUROD6",
+  "RBFOX3","SNAP25","STMN2","SYT1","TUBB2B","TUBB3","DCX","SOX11",
+  "AIF1","C1QC","CD83","CSF1R","A2M","APOLD1","CLDN5","FN1",
+  "TBR1","TBR2","BCL11B","CUX1","SATB2","EMX1","EMX2","SLC17A7","SLC17A6",
+  "NKX2-1","LHX6","LHX8","SOX6","ZFHX1B","SATB1","OLIG2","ASCL1","LMO1","DLX1","DLX2","ARX","MAFB",
+  "NR2F2","PROX1","SP8","DLX2","DLX5","NR2F1","GSX2",
+  "BCL11B","NOLZ1","FOXP1","FOXP2","ISL1","PPP1R1B","DRD1","MEIS2","EBF1","PCP4",
+  "GAD1","GAD2","RELN","SST","PVALB","VIP","HTR3A","TAC1","CCK","CR","NPY","CALB2",
+  "LMX1A","LMX1B","FOXA1","FOXA2","OTX2","DMRTA2","NR4A2","PITX3","SOX6","EN1",
+  "TH","KCNJ6","CALB1","SLC18A1","SLC6A3",
+  "TTYH1","RFX4","NESTIN","VIM","SOX1","SOX2","PTN","FABP7",
+  "HOXA2","HOXA4","PAX2","PAX8","OTX2","GBX2","FOXG1",
+  "PAX3","PAX7","IRX3","IRX5","NKX2-1","NKX2-2","RORB","BARHL1","PAX6","SIX6","SIX3",
+  "SOX10","PDGFRA","OLIG1","OLIG2","LUZP2","MBP",
+  "SGCA","SGCB","SGCD","SGCE","SGCG",
+  "ETV1","GBX1","ZIC1","LHX8",
+  "ZEB2","NXPH1","ACKR3",
+  "HES1","RPS5","RPL14","ATP5E","COX6C","HES5","ID3","ID1","ZEB1",
+  "EIF4G1","EIF2S1","EIF3B","ARX","DLX2","DLX1",
+  "ZFHX3","ZFHX4","NRG1",
+  "ERBB4","EPHB3","LHX8",
+  "SST","GAD1","RELN","NPY","PDE1A",
+  "PVALB","GAD1","SOX5","SYT2","CPLX1",
+  "SMARCD3","LHX1","MYT1","ZFHX4","MYT1L","RUNX1T1","ATCAY","LRFN5",
+  "DBX1","GBX1","GBX2","ISL1","LHX8","LHX6","LDB1","FOXG1","NKX2-1","ACHE","NKX6-2","CHAT"),
+  Lineage=c(rep("Astrocyte",18),rep("Neurogenesis",7),rep("Neuron",8),
+            rep("Mgl_Endo",8),rep("Glutamatergic",9),rep("MGE",13),rep("CGE_GE",7),
+            rep("LGE",10),rep("GABAergic",12),rep("mDA TF",10),
+            rep("mDA",5),rep("RGL",8),rep("Rostro-caudal",7),rep("Dorso-ventral",11),
+            rep("ODC",6),rep("SGCs",5),rep("MGE GP",4),rep("CIn",3),rep("MGE VZ",9),
+            rep("MGE SVZ",6),rep("MGE LGE MZ",3),rep("MGE Striatal",3),
+            rep("MGE SST",5),rep("MGE PV",5),rep("MGE In Vitro",8),rep("Cholinergic",12)))
+
+res1.7_annotation<-fread(file=paste0(ANALYSIS_OUTPUTDIR,"/res1.7 annotation.txt"),data.table=FALSE)
+res1.7_annotation$seurat_clusters<-as.factor(res1.7_annotation$seurat_clusters)
+```
+## Functions
+### Function-Gene name
+```{r}
+FUN_gene<-function(gene){subset(gene_info,Gene_Name %in% gene)$Gene_ID}
+FUN_geneid<-function(geneid){subset(gene_info,Gene_ID %in% geneid)$Gene_Name}
+```
+
+### Function-Seurat_clustering
+```{r}
+FUN_seurat_clustering<-function(seurat,prefix,reduction){
+  if (!dir.exists(paste0(FIGURE_OUTPUTDIR,"/",prefix)))
+    dir.create(paste0(FIGURE_OUTPUTDIR,"/",prefix))
+  lapply(seq(1,20)/10,FUN=function(x){
+    print (paste("Finding clusters res=",x,sep=" "))
+    seurat<-FindClusters(seurat, verbose = FALSE,res=x)
+    p<-DimPlot(seurat, label = TRUE,reduction=reduction,pt.size=0.5) + scale_colour_manual(values=colour_palette)+ggtitle(paste0("res=",x))+theme(text=element_text(size=12))+guides(fill=guide_legend(ncol=2))
+    ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/",prefix,"/res",x,".tiff"),width=12,height=10,units="cm",dpi=600,device="tiff",limitsize = TRUE)
+    seurat
+  })
+}
+```
+
+### Function-Marker_expression_umap
+
+```{r}
+FUN_marker_expression_umap_seurat<-function(seurat,marker,reduction){
+  sapply(levels(factor(marker$CellClass)),FUN=function(x){
+    temp<-marker$gene[marker$CellClass==x]
+    temp<-temp[temp%in%rownames(seurat)]
+    p<-FeaturePlot(seurat,features=unique(temp),pt.size=0.05,ncol=5,order=TRUE,cols=c("lightgrey","red"),reduction=reduction,repel=TRUE)+theme(text=element_text(size=4),title=element_text(size=4),legend.position="none")
+    
+    ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Marker expression on ",reduction,"/",x,".tiff"),width=40,height=ceiling(length(temp)/5)*5,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+  })
+  }
+```
+
+### Function-DEG comparison
+```{r}
+FUN_DEG_comparison<-function(query,prefix,ident.var="seurat_clusters",comparison=NULL,assay="RNA",slot="data",logFC=0.25,test.use="wilcox",latent.vars=NULL){
+  ## This script will produce a list containing a data.frame of the DEG list and a data.frame of the GO enrichment results.
+  
+  # parameter description
+  # query: a seurat object after dimension reduction and clustering
+  # ident.var: the variable containing the Idents information
+  # (Optional) comparison: a data.frame containing two columns to describe which pair of clusters to be compared against each other during FindMarkers. Only specify if pair-wise DEG analysis (FindMarkers) is intended.
+  # prefix: name of your comparison. This will be used as the name of folders containing your results.
+
+  
+  
+  # Error handling - parameter input
+
+  if (class(query)[1]!="Seurat"){
+    print("The query is not a Seurat object.")
+    break
+  }
+  
+  if (is.null(ident.var)){
+    print(paste0("WARNING: No ident.var specified. Default of the seurat object will be used"))
+  }
+  
+  if (!is.null(ident.var) & !ident.var%in%names(query@meta.data)){
+    print("The ident.var is not found in the query Seurat object.")
+    break
+  }
+  
+  if (!is.null(comparison)){
+    if((ncol(comparison)!=2 | class(comparison)!="data.frame")){
+      print("The comparison table is not a data.frame or the number of columns does not equal to 2.")
+      break
+    }
+  }
+  
+
+
+  # Setup dir
+  if (is.null(ANALYSIS_OUTPUTDIR)){
+    ANALYSIS_OUTPUTDIR<-getwd()
+    print("No specified analysis directory. Data will be stored at the current working directory:")
+    print(ANALYSIS_OUTPUTDIR)
+  }
+  
+  if(!dir.exists(paste0(ANALYSIS_OUTPUTDIR,"/DEG")))
+    dir.create(paste0(ANALYSIS_OUTPUTDIR,"/DEG"))
+  
+  
+  # Pre-processing query
+  DefaultAssay(query)<-assay
+  
+  if (!is.null(ident.var)){
+    Idents(query)<-ident.var}
+    
+    if (is.null(comparison)){
+      # FindAllMarkers
+      DEG_dframe<-FindAllMarkers(query, assay=assay,slot=slot,only.pos = TRUE, min.pct = 0.25, logfc.threshold = logFC,test.use=test.use,latent.vars=latent.vars)
+      DEG_dframe$Comparison<-paste0(DEG_dframe$cluster,"_vs_others")
+      DEG_dframe$pctratio<-DEG_dframe$pct.1/DEG_dframe$pct.2
+    }else{
+      # FindMarkers
+      DEG_dframe<-as.data.frame(rbindlist(lapply(1:nrow(comparison),FUN=function(n){
+        ident1=comparison[n,1]
+        ident2=comparison[n,2]
+        print(paste0("Comparing #",n,": ",ident1," and ",ident2))
+        temp<-FindMarkers(query,ident.1=ident1,ident.2=ident2,test.use=test.use,min.pct=0.25,logfc.threshold=logFC,only.pos=TRUE,latent.vars=latent.vars)
+        temp$gene<-rownames(temp)
+        temp$cluster<-paste(ident1,ident2,sep="_vs_")
+        temp$pctratio<-temp$pct.1/temp$pct.2
+        temp
+      }),use.names=TRUE))
+    }
+    
+    # Export DEG list
+    write.xlsx(DEG_dframe,file=paste0(ANALYSIS_OUTPUTDIR,"/DEG/DEG_",prefix,".xlsx"))
+
+  # Return a list of results
+  return(DEG_dframe)
+}
+```
+
+### Function-Seurat Reference Mapping
+
+```{r}
+FUN_seurat_reference_mapping<-function(query,reference,IdentVariable="seurat_clusters",k.weight=50,prefix,mapped.query=NULL,plot.only=FALSE,dims=1:30,reference.exclusion=NULL,reference.assay=NULL,query.assay=NULL,reference.reduction=NULL){
+  DefaultAssay(query)<-query.assay
+  if (!plot.only){
+    #query<-FindVariableFeatures(query,selection.method="vst",nfeatures=2000)
+    print(paste("Excluding the following clusters in reference -",IdentVariable,": ",reference.exclusion))
+    reference<-reference[,!reference@meta.data[,IdentVariable]%in%reference.exclusion]
+    reference<-FindVariableFeatures(reference,selection.method="vst",nfeatures=2000)
+    Idents(reference)<-reference@meta.data[,IdentVariable]
+    
+    if(!is.null(reference.reduction)){
+      if(reference.reduction=="harmony"){
+        print("Using harmony from the reference")
+        reference[['harmony2']]<-CreateDimReducObject(embeddings=reference[['harmony']]@cell.embeddings,key="harmony2_",loadings=reference[['pca']]@feature.loadings,assay="RNA")
+        reference.reduction<-"harmony2"
+      }
+      }
+
+    query.anchor<-FindTransferAnchors(reference=reference,query=query,dims=dims,reference.assay=reference.assay,query.assay=query.assay,reference.reduction=reference.reduction)
+    prediction<-TransferData(anchorset=query.anchor,refdata=Idents(reference),dims=dims,k.weight=k.weight)
+    prediction.query<-AddMetaData(query,metadata=prediction)
+  }else{
+    prediction.query<-mapped.query
+  }
+  
+  p<-prediction.query@meta.data %>%
+    ggplot(aes(x=predicted.id,y=prediction.score.max))+
+    geom_violin(aes(fill=predicted.id))+
+    geom_hline(yintercept=0.5)+
+    scale_fill_tableau()+
+    facet_wrap(.~seurat_clusters,scales="free_x",ncol=3)+
+    theme_bw()+
+    theme(legend.position="bottom",
+          axis.text.x=element_text(angle=45,vjust=1,hjust=1))+
+    labs(x="seurat_clusters",fill="predicted.id")
+  ggsave(plot=p,filename=paste0(prefix,"/Prediction score.tiff"),height=5*length(unique(prediction.query$seurat_clusters))/3+1,width=10,units="cm",dpi=600,device="tiff",limitsize = FALSE)
+  
+  p<-prediction.query@meta.data %>% group_by(seurat_clusters,predicted.id) %>% summarise(N=n()) %>% inner_join(y=prediction.query@meta.data %>% group_by(seurat_clusters) %>% summarise(Num=n()),by="seurat_clusters") %>%
+    ggplot(aes(x=predicted.id,y=seurat_clusters,fill=N/Num*100))+
+    geom_tile(colour="black")+
+    scale_fill_gradient(low="grey",high="red")+
+    theme_bw()+
+    labs(x="prediced.id",y="seurat_clusters",fill="Percent of\ncells (%)")+
+    theme(legend.position="bottom",
+          axis.text.x=element_text(angle=45,vjust=1,hjust=1,size=8))
+  ggsave(plot=p,filename=paste0(prefix,"/Prediction heatmap.tiff"),height=length(unique(prediction.query$seurat_clusters))*1+1,width=length(unique(prediction.query$predicted.id))+2,units="cm",dpi=600,device="tiff",limitsize = FALSE)
+  
+  return(prediction.query)
+}
+```
+
+
+
+### Function - Query common gene modules
+```{r}
+FUN_gene_query_upset<-function(data,gene=NULL,module=NULL,export.dir=paste0(ANALYSIS_OUTPUTDIR,"/Monocle/Shared_DEG"),background=23018,reference.dataset=NULL,nGO=10,do.GO=TRUE){
+  library(hypeR)
+  if(is.null(gene) & is.null(module)){
+    print("No criterion used.")
+    break
+  }
+  
+  if(!dir.exists(paste0(export.dir,"/raw_GO"))){
+    dir.create(paste0(export.dir,"/raw_GO"),recursive=TRUE)
+  }
+  
+    if(is.null(gene) & !is.null(module)){
+      print("Module mode. Specified modules contain these genes:")
+      matching_row_index<-which(apply(data, 1, function(row){all(row == names(data) %in% module)}))
+      if(is.na(matching_row_index[1])){
+        print("No overlapping genes.")
+        break
+      }
+      matched_genes<-rownames(data)[matching_row_index]
+      matched_genes_df<-inner_join(x=data.frame(hgnc_symbol=matched_genes),
+                                   y=gene_match_list,
+                                   by="hgnc_symbol")
+      print(matched_genes)
+      write.xlsx(matched_genes_df,file=paste0(export.dir,"/",str_flatten(module," "),".xlsx"))
+      }else{
+      if(!is.null(gene) & is.null(module)){
+        print("Gene mode. These genes are found in the following modules:")
+        matched_genes<-gene
+        module<-"Custom"
+        print(colnames(data)[which(data[gene,]==TRUE)])
+      }else{
+        if(!is.null(gene) & !is.null(module)){
+          print("Gene and module can't be specified at the same time.")
+          break
+        }
+      }
+    }
+      return(matched_genes)
+      if(do.GO){
+            # GO enrichment test
+          DEG_GOenrichment<-as.data.frame(rbindlist(lapply(1:length(reference.dataset),FUN=function(m){
+              print(paste0("Enrichment analyses using ",names(reference.dataset)[m]))
+              if (length(matched_genes)>0){
+                temp<-hypeR(matched_genes,reference.dataset[[m]],test="hypergeometric",background=background,fdr=0.05)
+                hyp_to_excel(temp,file_path=paste0(export.dir,"/raw_GO/",str_flatten(module," "),"_GO enrichment_",names(reference.dataset)[m],".xlsx"))
+                enrichment<-read.xlsx(xlsxFile=paste0(export.dir,"/raw_GO/",str_flatten(module," "),"_GO enrichment_",names(reference.dataset)[m],".xlsx"),sheet=1)
+                if (nrow(enrichment)>0){
+                  enrichment$modules<-str_flatten(module," ")
+                  enrichment$pct_overlap<-(enrichment$overlap*enrichment$background)/(enrichment$signature*enrichment$geneset)
+                  enrichment$genesets<-names(reference.dataset)[m]
+                }
+              }
+            enrichment$label<-tolower(enrichment$label)
+            enrichment<-left_join(enrichment,goterms,by="label")
+            
+            return(enrichment)
+          }),use.names=TRUE,fill=TRUE))
+          write.xlsx(DEG_GOenrichment,file=paste0(export.dir,"/",str_flatten(module," "),"_GO enrichment.xlsx"))
+          
+          # Prepare enrichment data for plotting
+          DEG_GOenrichment_top<-as.data.frame(rbindlist(lapply(levels(factor(DEG_GOenrichment$genesets)),FUN=function(x){
+            as.data.frame(rbindlist(lapply(levels(factor(DEG_GOenrichment$modules)),FUN=function(y){
+              temp<-subset(DEG_GOenrichment,fdr<0.05 & genesets==x & modules==y & geneset>10)
+              temp<-top_n(temp,nGO,-fdr)
+            }),use.names = TRUE))
+          }),use.names=TRUE))
+          
+          # Plotting
+          sapply(levels(factor(DEG_GOenrichment_top$modules)),FUN=function(x){
+            sapply(levels(factor(DEG_GOenrichment_top$genesets)),FUN=function(y){
+              temp<-subset(DEG_GOenrichment_top,modules==x & genesets==y)
+              width.unit<-max(nchar(temp$label))
+              if (is.infinite(width.unit))
+                width.unit=0
+              p<-ggplot(data=temp,
+                        aes(x=-log10(fdr),y=reorder(label,-fdr),fill=(pct_overlap),size=-log10(fdr)))+
+                geom_point(colour="black",pch=21)+
+                scale_fill_gradient(limits=c(NA,100),low="white",high="red",na.value = "red",trans="log10")+
+                theme_bw()+
+                theme(axis.text.y = element_text(size=11))+
+                labs(x="-log10FDR",y="GO term",size="-log10FDR",fill="Enrichment",title=x,subtitle=y)
+              ggsave(plot=p,filename=paste0(export.dir,"/Figures/GO enrichment_modules ",x,"_",y,".tiff"),
+                     width=width.unit*0.2+5,height=(length(levels(factor(temp$label)))*0.5+5),units="cm",dpi=600,device="tiff",limitsize = TRUE)
+            })
+          })
+      }
+  
+  
+      return(matched_genes)
+}
+```
+
+
+### Function - Geneset_Overlap
+
+```{r}
+FUN_Geneset_Overlap<-function(query,universe,OrgDb=org.Hs.eg.db,ont="All",keyType="SYMBOL",minGSSize=50,maxGSSize=500,prefix=NULL,nGO=10,pAdjustMethod="BH",pvalueCutoff=0.01,qvalueCutoff=0.05,pthreshold=0.05){
+  if(!is.null(prefix)){
+    output_dir<-paste0(ANALYSIS_OUTPUTDIR,"/Geneset Enrichment")
+    if(!dir.exists(output_dir))
+      dir.create(output_dir)
+  }
+  require(org.Hs.eg.db)
+  
+  
+  DEG_GO_BP2<-lapply(1:length(query),FUN=function(i){
+    temp<-as.data.table(enrichGO(gene= query[[i]],universe=universe,OrgDb=OrgDb,ont= ont,pAdjustMethod=pAdjustMethod,pvalueCutoff=pvalueCutoff,qvalueCutoff=qvalueCutoff,readable= TRUE,keyType=keyType,pool=TRUE,minGSSize=minGSSize,maxGSSize=maxGSSize)@result)
+    temp$Cluster<-names(query)[i]
+    return(temp)
+  })%>%rbindlist(use.names=TRUE)
+  
+  write.xlsx(DEG_GO_BP2,file=paste0(output_dir,"/",prefix,"_GO.xlsx"))
+  
+  if(!is.null(nGO)){
+    # Prepare enrichment data for plotting
+    DEG_GOenrichment_top<-as.data.frame(rbindlist(lapply(levels(factor(DEG_GO_BP2$Cluster)),FUN=function(y){
+      temp<-subset(DEG_GO_BP2,p.adjust<pthreshold & Cluster==y)
+      temp<-top_n(temp,nGO,-p.adjust)
+    }),use.names = TRUE))
+    
+    # Plotting
+    sapply(levels(factor(DEG_GOenrichment_top$Cluster)),FUN=function(x){
+      temp<-subset(DEG_GOenrichment_top,Cluster==x & ONTOLOGY=="BP")
+      width.unit<-max(nchar(temp$Description))
+      if (is.infinite(width.unit))
+        width.unit=0
+      p<-ggplot(data=temp,
+                aes(x=-log10(p.adjust),y=reorder(Description,-p.adjust),
+                    fill=(Count),size=-log10(p.adjust)))+
+        geom_point(colour="black",pch=21)+
+        scale_fill_gradient(low="grey",high="red",na.value = "red")+
+        theme_bw()+
+        theme(axis.text.y = element_text(size=11))+
+        labs(x="-log10 p.adjust",y="GO term",size="-log10 p.adjust",fill="Number\nof hits",title=x)
+      ggsave(plot=p,filename=paste0(output_dir,"/Figures/GO_ ",x,".tiff"),
+             width=width.unit*0.2+5,height=(length(levels(factor(temp$label)))*0.5+5),units="cm",dpi=600,device="tiff",limitsize = TRUE)
+    })
+  }
+  return(DEG_GO_BP2)
+  }
+```
+
+### Function - GO overlap score
+```{r}
+FUN_GO_overlap_score<-function(minimum,term_metadata,GO_db,id_var="ID",measure="Wang"){
+  library(GOSemSim)
+  if (sum(minimum %in%term_metadata[,id_var])==0){
+    print("Minimum terms not in the GO list")
+    break
+  }
+  
+  term_metadata<-subset(term_metadata,p.adjust<0.05)
+  
+  term_hit<-lapply(1:nrow(term_metadata),FUN=function(i){unlist(str_split(term_metadata$geneID[i],pattern=fixed("/"),simplify=FALSE))})
+  names(term_hit)<-term_metadata$ID
+  
+  minimum_genes<-unlist(term_hit[names(term_hit)%in%minimum])
+  
+  overlap<-sapply(term_hit,FUN=function(y){sum(y %in% minimum_genes)})/sapply(term_hit,length)
+  
+  # similarity
+  similarity<-rowMax(mgoSim(names(term_hit),minimum,semData=GO_db,measure=measure,combine=NULL))
+
+  term_metadata$pct_overlap_minirep<-overlap
+  term_metadata$max_similarity_minirep<-similarity
+  return(term_metadata)
+}
+```
+
+
+
+### Function - Minimal GO representation
+```{r}
+FUN_geneset_representation<-function(term_metadata,id_var="Description",reference,min.pct=0.9,min.difference=1,numCores=(detectCores()-1)){
+  # testing for overlap
+  term_metadata<-subset(term_metadata,p.adjust<0.05)
+  names(term_metadata)[which(names(term_metadata)==id_var)]<-"label"
+  
+  
+  term_hit<-lapply(1:nrow(term_metadata),FUN=function(i){
+    data.table(label=term_metadata$label[i],
+               hits=unlist(str_split(term_metadata$geneID[i],pattern=fixed("/"),simplify=FALSE)))
+  }) %>% rbindlist(use.names=TRUE)
+  term_hit$duplicated<-duplicated(term_hit$hits)
+  
+  gene<-unique(term_hit$hits)
+  
+  # create duplicated_score, which is the number of genes in the set that are also present in other sets.
+  term_metadata<-term_metadata %>% 
+    inner_join(y=(term_hit %>% 
+                    group_by(label) %>% 
+                    summarise(num_duplicated=sum(duplicated))),
+               by="label")
+  term_metadata$overlap<-as.numeric(str_split(term_metadata$GeneRatio,fixed("/"),simplify=TRUE)[,1])
+  term_metadata$fdr<-term_metadata$p.adjust
+  term_metadata$geneset<-as.numeric(str_split(term_metadata$BgRatio,fixed("/"),simplify=TRUE)[,1])
+  term_metadata$pct_duplicated<-term_metadata$num_duplicated/term_metadata$overlap
+  
+  # subsetting for overlap>duplicated_score. If overlap==duplicated_score, the term can be replaced by other terms
+  term_metadata_subset<-subset(term_metadata,pct_duplicated<1)
+  term_hit_subset<-term_hit[label %in% term_metadata_subset$label,]
+  
+  combo_list<-lapply(1:2,FUN=function(i){
+    term_combo<-combn(term_metadata_subset$label,i,simplify=FALSE)
+    }) %>% unlist(recursive=FALSE)
+  
+  cl<-makeCluster(numCores)
+  clusterExport(cl, c("combo_list","term_hit_subset"),envir=environment())
+  clusterEvalQ(cl,require(data.table))
+  combo_metrics<-parLapply(
+    cl,combo_list,
+    fun=function(included_terms){
+      included_genes<-term_hit_subset[label %in% included_terms,hits]
+      data.table(Number_GO=length(included_terms),
+                 GO_combo=paste(included_terms,collapse="+"),
+                 num_hits=length(unique(included_genes)),
+                 num_duplicated=sum(duplicated(included_genes)))
+    })
+  stopCluster(cl)
+  
+  candidate_combo<-combo_metrics %>% 
+    rbindlist() %>% 
+    top_n(n=1,wt=(`num_hits`-`num_duplicated`)) %>% 
+    top_n(n=1,wt=`num_hits`)
+  
+  candidate_term<-unlist(str_split(candidate_combo$GO_combo,fixed("+")))
+  term_remaining<-term_metadata_subset$label[!term_metadata_subset$label %in% candidate_term]
+  last_num_hits<-candidate_combo$num_hits
+  num_hits_difference<-last_num_hits
+  
+ 
+  
+  while(max(candidate_combo$num_hits)<length(gene)*min.pct & max(num_hits_difference)>=(min.difference+1)){
+    last_num_hits<-candidate_combo$num_hits
+    term_remaining<-term_remaining[!term_remaining %in% candidate_term]
+    cl<-makeCluster(numCores)
+    clusterExport(cl, c("term_remaining","term_hit_subset","candidate_term"),
+                  envir=environment())
+    clusterEvalQ(cl,require(data.table))
+    combo_metrics<-parLapply(
+      cl,term_remaining,
+      fun=function(included_terms){
+        included_genes<-term_hit_subset[label %in% c(included_terms,candidate_term),hits]
+        data.table(Number_GO=length(included_terms),
+                   GO_combo=included_terms,
+                   num_hits=length(unique(included_genes)),
+                   num_duplicated=sum(duplicated(included_genes)))
+        })
+    stopCluster(cl)
+    
+    candidate_combo<-combo_metrics %>% 
+      rbindlist() %>% 
+      top_n(n=1,wt=(`num_hits`-`num_duplicated`)) %>% 
+      top_n(n=1,wt=`num_hits`) %>% 
+      inner_join(y=term_metadata_subset,by=c("GO_combo"="label")) %>%
+      top_n(n=1,wt=overlap/fdr/pct_duplicated) %>%
+      top_n(n=1,wt=-geneset)
+
+    candidate_term<-c(candidate_term,candidate_combo$GO_combo)
+    num_hits_difference<-candidate_combo$num_hits-last_num_hits
+    
+    print(paste(round(candidate_combo$num_hits/length(gene)*100,2),"%"))
+  }
+  
+  return(subset(term_metadata,label %in% candidate_term))
+}
+```
+
+### Function - candidate expression testing
+```{r}
+FUN_candidate_expression_testing<-function(markers,seurat,prefix,ident.var,ident.1=NULL,ident.2=NULL,numCores=(detectCores()-1)){
+  cl<-makeCluster(numCores)
+  #registerDoParallel(cl)
+  clusterExport(cl, c("markers","seurat","prefix","ident.var","ident.1","ident.2"),envir=environment())
+  clusterEvalQ(cl, require(Seurat))
+  clusterEvalQ(cl, require(rlist))
+  clusterEvalQ(cl, require(stringr))
+  clusterEvalQ(cl, require(data.table))
+  
+  candidate_markers_FC<-parLapply(cl,markers,fun = function(x){
+    if(x%in%rownames(seurat)){
+      seurat_temp<-seurat[rownames(seurat)==x,]
+      if(is.null(ident.1)&is.null(ident.2)){
+        temp1<-list.cbind(lapply(unique(seurat@meta.data[,ident.var]),FUN=function(y){
+          temp<-FoldChange(seurat_temp,features=x,ident.1=y,ident.2=NULL,slot="data")
+          names(temp)[1]<-"FC"
+          value.group1<-as.numeric(GetAssayData(seurat_temp[,seurat_temp@meta.data[,ident.var]==y]))
+          value.group2<-as.numeric(GetAssayData(seurat_temp[,seurat_temp@meta.data[,ident.var]!=y]))
+          if (mean(value.group1,na.rm=TRUE)*mean(value.group2,na.rm=TRUE)>0){
+            temp$p.adj=p.adjust(p=wilcox.test(x=value.group1,y=value.group2)$p.value,method="bonferroni",n=nrow(seurat))}
+          names(temp)<-paste(names(temp),prefix,y,sep="_")
+          temp
+          }))
+      }else{
+        temp1<-FoldChange(seurat_temp,features=x,ident.1=ident.1,ident.2=ident.2,slot="data")
+        names(temp1)[1]<-"FC"
+        value.group1<-as.numeric(GetAssayData(seurat_temp[,seurat_temp@meta.data[,ident.var]==ident.1]))
+        if(is.null(ident.2)){
+          value.group2<-as.numeric(GetAssayData(seurat_temp[,seurat_temp@meta.data[,ident.var]!=ident.1]))
+        }else{
+          value.group2<-as.numeric(GetAssayData(seurat_temp[,seurat_temp@meta.data[,ident.var]==ident.2]))
+        }
+        if (mean(value.group1,na.rm=TRUE)*mean(value.group2,na.rm=TRUE)>0){
+          temp1$p.adj=p.adjust(p=wilcox.test(x=value.group1,y=value.group2)$p.value,method="bonferroni",n=nrow(seurat))}
+        names(temp1)<-paste0(names(temp1),"_",prefix,"_",str_remove(ident.1,"_"),"-",str_remove(ident.2,"_"))
+        temp1
+        }
+      temp1$gene<-x
+      temp1
+    }})
+  stopCluster(cl)
+  candidate_markers_FC<-as.data.frame(rbindlist(candidate_markers_FC,use.names = TRUE,fill=TRUE))
+  return(candidate_markers_FC)
+}
+```
+
+### Function-DER enrichment
+```{r}
+FUN_DER_enrichment<-function(seurat,AUC.matrix,ident.var=NULL,OUTPUT_DIR=getwd(),prefix,loadfile=FALSE,plot=TRUE,NumCore=NULL,LIBLOC=.libPaths()){
+  # Description: This function wrapper does enrichment analysis of SCENIC regulons in each cluster compared to all other clusters. It also generate scatter plots to show the differentially enriched regulons. For the plots, only significant regulons are plotted and the criteria are: p.adj<0.05 & mean.diff>1. top10 regulons are highlighted (ranked by mean.diff^mean.1).
+
+  # seurat: SeuratObject
+  # AUC.matrix: matrix containing the AUC score (simply load SCENIC output int/3.4_regulonAUC.Rds)
+  # ident.var: character, variable name which stores the cluster information, must present in the SeuratObject, if not provided, default identity will be used
+  # OUTPUT_DIR: the directory for data storage. If not specified, the current working directory will be used.
+  # prefix: file name to store the output
+  # plot: TRUE to generate scatter plot, FALSE to exit without plotting
+  # DER.file: the address of an existing enrichment file. If provided, the enrichment will not be calculated, but will be loaded from a previous saved file.
+  # NumCore: number of cores to use for parallel analyses. Must be manually set on Hawk.
+  # LIBLOC: address where you store the libaries. If not set, the default will be used.
+
+  if (is.null(ident.var)){
+    print("No ident.var provided. Defaut identity will be used.")
+  }else{
+    if(!(ident.var%in%names(seurat@meta.data))){
+      print("Provided ident.var does not present in the SeuratObject.")
+      break
+    }else{
+      print(paste("Setting identity to",ident.var))
+      Idents(seurat)<-ident.var
+    }
+  }
+  
+  if(is.null(NumCore)){
+    print("No NumCore is set. Automatically detect the number of cores.")
+    NumCore<-detectCores()-1
+  }else{
+    if(NumCore>detectCores()){
+      print("NumCore is greater than the number of cores available. Automatically detect the number.")
+      NumCore<-detectCores()-1
+    }
+  }
+  
+  
+  if (isFALSE(loadfile)){
+    MATRIX<-AUC.matrix@assays@data@listData[["AUC"]]
+    METADATA<-seurat@meta.data[ident.var]
+    colnames(METADATA)<-"Ident"
+  
+    # Start the CPU clusters
+    cl <- makeCluster(detectCores()-1)
+    clusterExport(cl, c("METADATA","MATRIX","prefix","LIBLOC"),envir=environment())
+    clusterEvalQ(cl, .libPaths(LIBLOC))
+    clusterEvalQ(cl, require(Seurat))
+    clusterEvalQ(cl, require(data.table))
+    clusterEvalQ(cl, require(parallel))
+  
+    DER_res0.7<-lapply(levels(factor(Idents(seurat))),FUN=function(y){
+      as.data.frame(rbindlist(parLapply(cl,rownames(AUC.matrix),fun=function(x){
+        print(paste("Comparing",y,"against others"))
+        value.group1<-as.numeric(MATRIX[rownames(AUC.matrix)==x,rownames(subset(METADATA,Ident==y))])
+        value.group2<-as.numeric(MATRIX[rownames(AUC.matrix)==x,rownames(subset(METADATA,Ident!=y))])
+        
+        if (mean(value.group1,na.rm=TRUE)*mean(value.group2,na.rm=TRUE)>0){
+          test.result<-wilcox.test(x=value.group1,y=value.group2)
+          data.frame(regulon=x,
+                      cluster=y,
+                      p.value=test.result$p.value,
+                      mean.1=mean(value.group1,na.rm=TRUE),
+                      mean.2=mean(value.group2,na.rm=TRUE),
+                      p.adj=p.adjust(p=test.result$p.value,method="bonferroni",n=nrow(seurat)))
+          }
+        }),use.name=TRUE))
+      })
+    stopCluster(cl)
+    
+    DER_res0.7<-as.data.frame(rbindlist(DER_res0.7,use.name=TRUE))
+      
+    DER_res0.7$mean.diff<-DER_res0.7$mean.1/DER_res0.7$mean.2
+    DER_res0.7$rank<-DER_res0.7$mean.diff^DER_res0.7$mean.1
+    
+    DER_res0.7$regulon_tf<-sapply(DER_res0.7$regulon,FUN=function(x){unlist(strsplit(x,split="-",fixed=TRUE))[1]})
+    DER_res0.7$regulon_tf<-sapply(DER_res0.7$regulon_tf,FUN=function(x){unlist(strsplit(x,split=" ",fixed=TRUE))[1]})
+    
+    write.xlsx(DER_res0.7,file=paste0(OUTPUT_DIR,"/",prefix,".xlsx"))
+  
+  }else{
+    # read the DER.file
+    DER_res0.7<-read.xlsx(xlsxFile=paste0(OUTPUT_DIR,"/",prefix,".xlsx"))
+  }
+  
+  if (isTRUE(plot)){
+    # Plotting
+    if(!dir.exists(paste0(FIGURE_OUTPUTDIR,"/DER")))
+      dir.create(paste0(FIGURE_OUTPUTDIR,"/DER"))
+    output_dir<-paste0(FIGURE_OUTPUTDIR,"/DER/",prefix)
+    if(!dir.exists(output_dir))
+      dir.create(output_dir)
+  
+    lapply(levels(factor(DER_res0.7$cluster)),FUN=function(x){
+    temp<-subset(DER_res0.7,p.adj<0.05 & mean.diff>1 & cluster==x)
+    p<-ggplot(data=temp,aes(x=mean.1,y=mean.diff))+
+      geom_point(colour="grey")+
+      geom_point(data=top_n(temp,10,mean.diff^mean.1),colour="red")+
+      geom_text_repel(data=top_n(temp,10,mean.diff^mean.1),aes(label=regulon),nudge_x = 0.5,nudge_y=0.5)+
+      theme_bw()+
+      labs(title=paste0("Cluster ",x),x=paste0("Mean AUC in cluser ",x),y="Mean AUC ratio")
+    if (max(temp$mean.diff)-min(temp$mean.diff)>20){
+      p<-p+scale_y_continuous(trans="log10")+
+        ylab("log10 Mean AUC ratio")
+    }
+    ggsave(plot=p,filename=paste0(output_dir,"/",x,".tiff"),height=9,width=10,units="cm",dpi=600,device="tiff",limitsize = FALSE)
+    })
+    }
+  
+  return(DER_res0.7)
+}
+```
+
+### Monocle functions
+```{r}
+FUN_expression_prediction<-function (cds,gene,min_expr=NULL,size.factor=1e4,trend_formula = "~ splines::ns(pseudotime, df=3)"){
+
+  {assertthat::assert_that(methods::is(cds, "cell_data_set"))
+    cds_subset<-cds[rowData(cds)$gene_short_name %in% gene,]
+    tryCatch({
+      colData(cds_subset)$pseudotime <- pseudotime(cds_subset)
+    }, error = function(x) {
+      stop("No pseudotime calculated. Must call order_cells first.")
+    })}
+  
+  f_id <- NA
+  Cell <- NA
+  cds_exprs <- cds_subset[,is.finite(colData(cds_subset)$pseudotime)]%>%SingleCellExperiment::logcounts()%>%as.matrix()%>%reshape2::melt()%>%data.frame()
+  colnames(cds_exprs) <- c("f_id", "Cell", "expression")
+  cds_exprs <- inner_join(cds_exprs, data.frame(colData(cds_subset)), by=c("Cell"="Barcode"))
+  cds_exprs$f_id <- as.character(cds_exprs$f_id)
+  cds_exprs$feature_label <- factor(as.character(cds_exprs$f_id))
+  new_data <- as.data.frame(colData(cds_subset))
+  new_data$Size_Factor = size.factor
+  model_tbl = fit_models(cds_subset, model_formula_str = trend_formula)
+  model_expectation <- model_predictions(model_tbl, new_data = new_data)
+  colnames(model_expectation) <- colnames(cds_subset)
+  expectation <- plyr::ddply(cds_exprs, plyr::.(f_id, Cell), 
+    function(x) {
+      data.frame(expectation = model_expectation[x$f_id, 
+        x$Cell])
+    })
+  cds_exprs <- merge(cds_exprs, expectation)
+  return(cds_exprs)
+}
+
+FUN_plot_pseudotime<-function (cds,gene,min_expr=NULL,cell_size=0.5, 
+                               color_cells_by="pseudotime",size.factor=1e4,
+                               export.dir=NULL,nrow=NULL,ncol=2,individual.plot=FALSE,
+                               trend_formula = "~ splines::ns(pseudotime, df=3)",
+                               vertical_jitter = NULL, horizontal_jitter = NULL){
+
+  {
+    assertthat::assert_that(methods::is(cds, "cell_data_set"))
+    cds_subset<-cds[rowData(cds)$gene_short_name %in% gene,]
+    tryCatch({
+      colData(cds_subset)$pseudotime <- pseudotime(cds_subset)
+    }, error = function(x) {
+      stop("No pseudotime calculated. Must call order_cells first.")
+    })
+    
+  
+    assertthat::assert_that(color_cells_by %in% c("cluster", 
+      "partition") | color_cells_by %in% names(colData(cds_subset)), 
+      msg = paste("color_cells_by must be a column in the", 
+        "colData table."))
+  
+    if (!is.null(nrow)) {assertthat::assert_that(assertthat::is.count(nrow))}
+    assertthat::assert_that(assertthat::is.count(ncol))
+    
+    }
+  
+  # Flow
+  
+  f_id <- NA
+  Cell <- NA
+  cds_exprs <- cds_subset[,is.finite(colData(cds_subset)$pseudotime)]%>%SingleCellExperiment::logcounts()%>%as.matrix()%>%reshape2::melt()%>%data.frame()
+  colnames(cds_exprs) <- c("f_id", "Cell", "expression")
+  cds_exprs <- inner_join(cds_exprs, data.frame(colData(cds_subset)), by=c("Cell"="Barcode"))
+  cds_exprs$f_id <- as.character(cds_exprs$f_id)
+  cds_exprs$feature_label <- factor(as.character(cds_exprs$f_id))
+  new_data <- as.data.frame(colData(cds_subset))
+  new_data$Size_Factor = size.factor
+  model_tbl = fit_models(cds_subset, model_formula_str = trend_formula)
+  model_expectation <- model_predictions(model_tbl, new_data = new_data)
+  colnames(model_expectation) <- colnames(cds_subset)
+  expectation <- plyr::ddply(cds_exprs, plyr::.(f_id, Cell), 
+    function(x) {
+      data.frame(expectation = model_expectation[x$f_id, 
+        x$Cell])
+    })
+  cds_exprs <- merge(cds_exprs, expectation)
+  
+  #
+  
+  if(individual.plot & !is.null(export.dir)){
+    #cl<-makeCluster(detectCores()-1)
+    #clusterExport(cl, c("cds_exprs","export.dir","LIBLOC"),envir=environment())
+    #clusterEvalQ(cl, .libPaths(LIBLOC))
+    #clusterEvalQ(cl, require(ggplot2))
+    #clusterEvalQ(cl, require(viridisLite))
+    #clusterEvalQ(cl, require(viridis))
+    
+    sapply(unique(cds_exprs$f_id),FUN=function(temp.gene){
+      q <- ggplot(aes(pseudotime, expression), 
+                  data = subset(cds_exprs,f_id==temp.gene))+
+            geom_point(aes(color = pseudotime),size=0.75)+
+            viridis::scale_color_viridis(option = "C")+
+            geom_line(aes(x = pseudotime, y = expectation),
+                      data = subset(cds_exprs,f_id==temp.gene))+
+            labs(y="Expression",x="pseudotime",title=temp.gene)+
+            theme_classic()+
+            theme(legend.position="right",
+                  text=element_text(size=12))
+      ggsave(q,filename=paste0(export.dir,"/",temp.gene,".tiff"),
+             width=8,height=6,dpi=150,units="cm")
+      })
+    #stopCluster(cl)
+    return(cds_exprs)
+  }else{
+    q <- ggplot(aes(pseudotime, expression),
+                    data = cds_exprs)
+        if (!is.null(color_cells_by)) {
+          q <- q + geom_point(aes_string(color = color_cells_by),size=0.75,
+                              position = position_jitter(horizontal_jitter,
+                                                         vertical_jitter))
+          if (methods::is(colData(cds_subset)[, color_cells_by],"numeric")) {q <- q + viridis::scale_color_viridis(option = "C")}
+        }else{
+          q <- q + geom_point(size=0.75,position = position_jitter(horizontal_jitter, vertical_jitter))
+          }
+        q <- q + geom_line(aes(x = pseudotime, y = expectation),
+                           data = cds_exprs)+
+          facet_wrap(~feature_label, nrow = nrow, ncol = ncol, scales = "free_y")+
+          labs(y="Expression",x="pseudotime")+
+          theme_classic()+
+          theme(legend.position="right")
+        return(list(q,cds_exprs))
+  }
+}
+
+```
+
+
+# Load data
+```{r}
+count<-fread(file=paste0(COUNT_INPUTDIR,"/count.csv"),data.table=FALSE)
+rownames(count)<-fread(file=paste0(COUNT_INPUTDIR,"/rownames.csv"),data.table=FALSE)[,1]
+rownames(count)<-paste(str_split(rownames(count),"_",simplify=TRUE)[,2],str_split(rownames(count),"_",simplify=TRUE)[,1],sep="-")
+
+metadata<-data.frame(CellID=colnames(count))
+
+metadata$Barcode<-str_split(metadata$CellID,"_",simplify=TRUE)[,2]
+metadata$SampleID<-str_split(metadata$CellID,"_",simplify=TRUE)[,1]
+
+# Load SampleMetadata
+sample_metadata<-read.xlsx(xlsxFile=paste0(PROJECT_DIR,"/SampleMetadata.xlsx"))
+
+# merge
+metadata<-left_join(metadata,sample_metadata,by="SampleID")
+rownames(metadata)<-metadata$CellID
+
+# load gene info
+gene_info<-fread(file=paste0(PROJECT_DIR,"/gene_info.csv"),data.table=FALSE)
+gene_info$Gene_ID<-paste(str_split(gene_info$Gene_ID,"_",simplify=TRUE)[,2],str_split(gene_info$Gene_ID,"_",simplify=TRUE)[,1],sep="-")
+```
+
+
+# Create Seurat
+```{r}
+seurat<-CreateSeuratObject(counts=as.matrix(count),
+                           project="SGCE",
+                           meta.data=metadata,
+                           min.cells = 3, min.features = 200)
+```
+
+# Filtering
+```{r}
+# keep protein coding genes only
+seurat_coding<-seurat[rownames(seurat)%in%subset(gene_info,Gene_Biotype=="protein_coding")$Gene_ID,]
+seurat_coding<-PercentageFeatureSet(seurat_coding, pattern = "^MT-",col.name = "percent.mt")
+
+seurat_neuron<-subset(seurat_coding,SampleGroup=="Interneuron")
+seurat_astrocyte<-subset(seurat_coding,SampleGroup=="Astrocyte")
+```
+
+## Cell filtering
+### scater
+```{r}
+sce<-SingleCellExperiment(list(counts=GetAssayData(seurat_neuron)),colData=as.data.frame(seurat_neuron@meta.data))
+
+discard.mito <- isOutlier(sce$percent.mt,
+                          batch=sce$SampleID,
+                          type="higher",
+                          nmads=3)
+discard.detected <- isOutlier(sce$nFeature_RNA,batch=sce$SampleID,type="lower",nmads=3)
+discard.sum <- isOutlier(sce$nCount_RNA,batch=sce$SampleID,log=TRUE,type="both",nmads=3)
+
+threshold<-data.frame(mito=t(as.matrix(attr(discard.mito, "thresholds"))),
+                      detected=t(as.matrix(attr(discard.detected, "thresholds"))),
+                      sum=t(as.matrix(attr(discard.sum, "thresholds"))))
+threshold$SampleID<-rownames(threshold)
+
+
+p<-plotColData(sce,x="SampleID",y="percent.mt",colour_by=I(discard.mito),point_size=0.5)+
+  theme_bw()+
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        legend.position="none")
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/scater/filtering_discard_mito.tiff"),width=12,height=7,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+
+p<-plotColData(sce,x="SampleID",y="nFeature_RNA",colour_by=I(discard.detected),point_size=0.5)+
+  theme_bw()+
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        legend.position="none")
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/scater/filtering_detected.tiff"),width=12,height=7,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+
+p<-plotColData(sce,x="SampleID",y="nCount_RNA",colour_by=I(discard.sum),point_size=0.5)+
+  scale_y_continuous(trans="log10")+
+  theme_bw()+
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        legend.position="none")
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/scater/filtering_sum.tiff"),width=12,height=7,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+
+reasons<-list(discard.mito.high=discard.mito,
+              discard.detected.low=discard.detected,
+              discard.sum=discard.sum)
+
+reasons$discard<-(reasons$discard.mito.high+
+                    reasons$discard.detected.low+
+                    reasons$discard.sum)>0
+
+
+rm(list=c("sce","discard.mito","discard.detected","discard.sum","threshold"))
+```
+
+#### scater filtering summary
+```{r}
+filtering_summary<-cbind(data.frame(seurat_neuron@meta.data),list.cbind(reasons)) %>% 
+  group_by(SampleID) %>% 
+  summarise(discard.mito=sum(discard.mito.high),
+            discard.detected=sum(discard.detected.low),
+            discard.sum=sum(discard.sum),
+            discard=sum(discard)) %>%
+  inner_join(y=sample_metadata,by="SampleID")
+
+write.xlsx(filtering_summary,file=paste0(ANALYSIS_OUTPUTDIR,"/Scater filtering summary.xlsx"))
+
+filtering_summary<-melt(filtering_summary,id.vars=names(sample_metadata))
+
+p<-ggplot(data=subset(filtering_summary,variable!="discard"),
+          aes(x=SampleID,y=value,fill=variable))+
+  geom_bar(stat="identity")+
+  scale_fill_tableau()+
+  theme_bw()+
+  facet_grid(.~CellLine,space="free",scales="free_x")+
+  labs(y="Percent of cells discarded (%)",fill="Reason for discarding")+
+  theme(legend.position = "bottom",
+        text=element_text(size=12))+
+  guides(fill=guide_legend(ncol=1))
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/scater/filtering_summary.tiff"),width=12,height=10,units="cm",dpi=600,device="tiff",limitsize = TRUE)
+```
+
+
+### Final cell level filtering
+scater is not used
+nCount_RNA > 2e4
+nFeature_RNA > 5000
+percent.mt < 10
+```{r}
+seurat_neuron_filtered<-subset(seurat_neuron,nCount_RNA>2e4 & nFeature_RNA>5000 & percent.mt<10)
+
+# Final cell filtering summary
+temp<-data.frame(seurat_neuron@meta.data)
+temp$discard.mito<-temp$percent.mt>=10
+temp$discard.sum<-temp$nCount_RNA<=2e4
+temp$discard.detected<-temp$nFeature_RNA<=5000
+
+filtering_summary<-temp %>%
+  group_by(SampleID) %>% 
+  summarise(discard.mito=sum(discard.mito),
+            discard.detected=sum(discard.detected),
+            discard.sum=sum(discard.sum)) %>%
+  inner_join(y=sample_metadata,by="SampleID")
+
+write.xlsx(filtering_summary,file=paste0(ANALYSIS_OUTPUTDIR,"/Final filtering summary.xlsx"))
+
+filtering_summary<-melt(filtering_summary,id.vars=names(sample_metadata))
+
+p<-ggplot(data=subset(filtering_summary,variable!="discard"),
+          aes(x=SampleID,y=value,fill=variable))+
+  geom_bar(stat="identity")+
+  scale_fill_tableau()+
+  theme_bw()+
+  facet_grid(.~CellLine,space="free",scales="free_x")+
+  labs(y="Percent of cells discarded (%)",fill="Reason for discarding")+
+  theme(legend.position = "bottom",
+        text=element_text(size=12))+
+  guides(fill=guide_legend(ncol=1))
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/filtering_summary.tiff"),width=12,height=10,units="cm",dpi=600,device="tiff",limitsize = TRUE)
+```
+
+
+## Gene filtering
+expressed in at least 1% cells (>=13)
+with at least 5 counts across all cells (in effect no additional filtering applied)
+```{r}
+'{temp<-(GetAssayData(seurat_neuron_filtered,layer="counts"))
+cl <- makeCluster(detectCores()-1)
+clusterExport(cl, "temp")
+feature_ncell<-parApply(cl,temp,MARGIN=1,FUN=function(x){sum(x>0)})
+stopCluster(cl)}'
+
+seurat_neuron_filtered<-seurat_neuron_filtered[feature_ncell>ncol(seurat_neuron_filtered)*0.01 & rowSums(GetAssayData(seurat_neuron_filtered,layer="counts"))>=5,]
+
+rm(temp)
+```
+
+
+
+# Reduction
+## Normalisation testing
+Use 1e5
+```{r include=FALSE}
+test_factors<-c(1e3,1e4,2.5e4,5e4,7.5e4,1e5,1e6)
+temp_before<-as.vector(GetAssayData(seurat_neuron_filtered,layer="counts"))
+
+p1<-ggplot(data=data.frame(m=temp_before[temp_before>0]),aes(x=m))+geom_histogram()
+ggsave(p1,filename=paste0(FIGURE_OUTPUTDIR,"/Normalisation comparison/Dataset_Before.tiff"),width=9,height=6,units="cm",dpi=300)
+  
+comparison<-lapply(test_factors,FUN=function(x){
+  temp_after<-as.vector(GetAssayData(NormalizeData(seurat_neuron_filtered,scale.factor=x),slot="data"))
+  p1<-ggplot(data=data.frame(m=temp_after[temp_after>0]),aes(x=m))+geom_histogram()
+  ggsave(p1,filename=paste0(FIGURE_OUTPUTDIR,"/Normalisation comparison/Dataset_",x/1000,"K.tiff"),width=9,height=6,units="cm",dpi=300)
+})
+
+rm(list=c("test_factors","temp_before","p1","comparison"))
+```
+
+## Normalisation
+```{r}
+seurat_normalised<-NormalizeData(seurat_neuron_filtered,scale.factor=1e4)
+
+# Cell cycle scoring
+exp.mat <- read.table(file=paste0(PROJECT_DIR,"/nestorawa_forcellcycle_expressionMatrix.txt"), header = TRUE,as.is = TRUE, row.names = 1)
+seurat_normalised <- CellCycleScoring(seurat_normalised, s.features = FUN_gene(cc.genes$s.genes), g2m.features = FUN_gene(cc.genes$g2m.genes), set.ident = TRUE)
+
+p<-seurat_normalised@meta.data %>% 
+  group_by(CellLine,SampleID,Phase) %>% 
+  summarise(n()) %>% 
+  ggplot(aes(x=SampleID,y=`n()`,fill=Phase))+
+    geom_bar(stat="identity")+
+    scale_fill_colorblind()+
+    theme_bw()+
+    facet_grid(.~CellLine,space="free",scales="free_x")+
+    labs(y="Number of cells",fill="Cell cycle phase")+
+    theme(legend.position = "right",
+          text=element_text(size=12),
+          axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Phase_bySampleGroup.tiff"),width=12,height=8,units="cm",dpi=600,device="tiff",limitsize = TRUE)
+
+```
+
+
+## Scaling
+```{r}
+seurat_normalised<-FindVariableFeatures(seurat_normalised,nfeatures=2000)
+VariableFeaturePlot(seurat_normalised)
+
+seurat_normalised<-ScaleData(seurat_normalised,vars.to.regress=c("percent.mt","nCount_RNA"))
+```
+
+## PCA
+```{r include=FALSE}
+seurat_normalised <- RunPCA(seurat_normalised)
+
+#DimHeatmap(seurat_normalised, dims = 1:20, cells = 1000, balanced = TRUE)
+p<-ElbowPlot(seurat_normalised,ndims=50)+theme(plot.background=element_rect(fill="white"))
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/ElbowPlot.tiff"),width=10,height=8,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+
+# Jackstraw method
+seurat_normalised <- JackStraw(seurat_normalised, num.replicate = 100,dims=50)
+seurat_normalised <- ScoreJackStraw(seurat_normalised, dims = 1:50)
+
+p<-JackStrawPlot(seurat_normalised, dims = 1:50)+theme(legend.position="bottom",text=element_text(size=10),plot.background=element_rect(fill="white"))+labs(colour="PC:\nvalue")+guides(colour=guide_legend(ncol=4))
+
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/JackStrawPlot.tiff"),width=16,height=14,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+
+dims.chosen=1:30
+```
+
+
+## UMAP
+```{r include=FALSE}
+seurat_normalised <- RunUMAP(seurat_normalised,reduction = "pca",dims = dims.chosen,return.model=TRUE,reduction.name="umap_pca")
+```
+
+## Harmony
+```{r}
+seurat_normalised<-RunHarmony(seurat_normalised,group.by.vars=c("AraC","Chip","Patient"),dims.use=dims.chosen,plot_convergence=TRUE)
+
+seurat_normalised<-RunUMAP(seurat_normalised,dims=dims.chosen,reduction="harmony")
+```
+
+## Plot
+```{r include=FALSE}
+# categorical variables
+META_VARIABLE<-c(names(seurat_normalised@meta.data)[c(6:7,9:17,22)])
+
+lapply(META_VARIABLE,FUN=function(x){
+  p<-ggplot(data=DimPlot(object=seurat_normalised,reduction="pca",group.by=x,shuffle=TRUE)$data,
+       aes(PC_1,PC_2,colour=.data[[x]]))+
+    geom_point(size=0.5,alpha=1)+
+    scale_colour_manual(values=colour_palette)+
+    theme_bw()+
+    theme(legend.position="bottom",text=element_text(size=10))+
+    guides(colour=guide_legend(nrow=2,override.aes = list(size=1.5,alpha=1)))
+  ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Reduction/PCA/PCA_by",x,".tiff"),width=12,height=10,units="cm",dpi=300,device="tiff",limitsize = TRUE)})
+
+lapply(META_VARIABLE,FUN=function(x){
+  p<-ggplot(data=DimPlot(object=seurat_normalised,reduction="harmony",group.by=x,shuffle=TRUE)$data,
+       aes(x=harmony_1,y=harmony_2,colour=.data[[x]]))+
+    geom_point(size=0.5,alpha=1)+
+    scale_colour_manual(values=colour_palette)+
+    theme_bw()+
+    theme(legend.position="bottom",text=element_text(size=10))+
+    guides(colour=guide_legend(nrow=2,override.aes = list(size=1.5,alpha=1)))
+  ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Reduction/Harmony/Harmony_by",x,".tiff"),width=12,height=10,units="cm",dpi=300,device="tiff",limitsize = TRUE)})
+
+
+lapply(META_VARIABLE,FUN=function(x){
+  p<-ggplot(data=DimPlot(object=seurat_normalised,reduction="umap_pca",group.by=x,shuffle=TRUE)$data,
+       aes(x=umappca_1,y=umappca_2,colour=.data[[x]]))+
+    geom_point(size=0.5,alpha=1)+
+    scale_colour_manual(values=colour_palette)+
+    theme_bw()+
+    theme(legend.position="bottom",text=element_text(size=10))+
+    guides(colour=guide_legend(nrow=2,override.aes = list(size=1.5,alpha=1)))
+  ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Reduction/UMAP_PCA/UMAP_by",x,".tiff"),width=12,height=10,units="cm",dpi=300,device="tiff",limitsize = TRUE)})
+
+lapply(META_VARIABLE,FUN=function(x){
+  p<-ggplot(data=DimPlot(object=seurat_normalised,reduction="umap",group.by=x,shuffle=TRUE)$data,
+       aes(x=umap_1,y=umap_2,colour=.data[[x]]))+
+    geom_point(size=0.5,alpha=1)+
+    scale_colour_manual(values=colour_palette)+
+    theme_bw()+
+    theme(legend.position="bottom",text=element_text(size=10))+
+    guides(colour=guide_legend(nrow=2,override.aes = list(size=1.5,alpha=1)))
+  ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Reduction/UMAP/UMAP_by",x,".tiff"),width=12,height=10,units="cm",dpi=300,device="tiff",limitsize = TRUE)})
+
+
+
+```
+
+
+
+
+# Clustering
+using harmony for clustering
+
+```{r include=FALSE}
+
+seurat_normalised<-FindNeighbors(seurat_normalised,dims=dims.chosen,verbose = TRUE,reduction="harmony")
+seurat_normalised_cluster_list<-FUN_seurat_clustering(seurat_normalised,"Clustering_UMAP","umap")
+names(seurat_normalised_cluster_list)<-seq(1,20)/10
+
+```
+
+
+## Stat
+```{r}
+clustering_summary<-as.data.frame(t(rbindlist(lapply(1:20,FUN=function(i){
+  temp<-as.data.frame(t(data.frame(NumCell=summary(seurat_normalised_cluster_list[[i]]$seurat_clusters))))
+}),fill=TRUE)))
+names(clustering_summary)<-names(seurat_normalised_cluster_list)
+
+sapply(1:20,FUN=function(i){
+  if (!dir.exists(paste0(FIGURE_OUTPUTDIR,"/Clustering summary/",names(seurat_normalised_cluster_list)[i])))
+    dir.create(paste0(FIGURE_OUTPUTDIR,"/Clustering summary/",names(seurat_normalised_cluster_list)[i]))
+  temp<-seurat_normalised_cluster_list[[i]]
+  
+  # Summary by CellLine in seurat_clusters
+  x<-temp@meta.data %>% group_by(seurat_clusters,CellLine,Sample) %>% summarise(n=n()) %>% inner_join(temp@meta.data%>%group_by(seurat_clusters)%>%summarise(NumCell=n()),by="seurat_clusters")
+  p<-ggplot(data=x,
+          aes(x=seurat_clusters,y=Sample,fill=(n/NumCell)*100))+
+  geom_tile(lwd = 0.5,linetype = 1,colour="black")+
+  geom_text(aes(label=n))+
+  theme_classic()+
+  facet_grid(CellLine~.,scales="free_y",space="free")+
+  scale_fill_gradient(high="red",low="white")+
+  guides(fill=guide_colourbar(title="Percent of cells\nin cluster (%)"))
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Clustering summary/",names(seurat_normalised_cluster_list)[i],"/Sample_inSeuratClusters.tiff"),width=13,height=13,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+
+  # Summary by CellLine in seurat_clusters
+  x<-temp@meta.data %>% group_by(seurat_clusters,CellLine,Sample) %>% summarise(n=n()) %>% inner_join(temp@meta.data%>%group_by(Sample)%>%summarise(NumCell=n()),by="Sample")
+  p<-ggplot(data=x,
+          aes(x=seurat_clusters,y=Sample,fill=(n/NumCell)*100))+
+  geom_tile(lwd = 0.5,linetype = 1,colour="black")+
+  geom_text(aes(label=n))+
+  theme_classic()+
+  facet_grid(CellLine~.,scales="free_y",space="free")+
+  scale_fill_gradient(high="red",low="white")+
+  guides(fill=guide_colourbar(title="Percent of cells\nin cluster (%)"))
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Clustering summary/",names(seurat_normalised_cluster_list)[i],"/Sample_inSample.tiff"),width=13,height=13,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+
+  # Phase
+  x<-temp@meta.data %>% group_by(seurat_clusters,Phase) %>% summarise(N=n())
+  p<-ggplot(data=x,
+            aes(x=seurat_clusters,y=N,fill=Phase))+
+    geom_bar(stat="identity")+
+    scale_fill_tableau()+
+    theme_bw()+
+    labs(y="Number of cells",fill="Cell cycle phase")+
+    theme(legend.position = "bottom",
+            text=element_text(size=12))
+  ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Clustering summary/",names(seurat_normalised_cluster_list)[i],"/Phase.tiff"),width=13,height=8,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+
+})
+
+```
+
+
+# Expression
+## Marker expression-overview
+
+```{r include=FALSE}
+marker_list<-read.xlsx(paste0(PROJECT_DIR,"/Marker list.xlsx"),sheet=1)
+marker_list$gene<-mapvalues(marker_list$gene,from=gene_info$Gene_Name,to=gene_info$Gene_ID)
+FUN_marker_expression_umap_seurat(seurat_normalised,marker_list,"umap")
+```
+
+
+## Use res1.7
+```{r}
+seurat_res1.7<-seurat_normalised_cluster_list$`1`
+#res1.7_annotation<-fread(file=paste0(ANALYSIS_OUTPUTDIR,"/res1.7 annotation.txt"),data.table=FALSE)
+#res1.7_annotation$seurat_clusters<-as.factor(res1.7_annotation$seurat_clusters)
+
+p<-seurat_res1.7@meta.data %>%
+  group_by(CellLine,seurat_clusters) %>%
+  summarise(N=n()) %>%
+  inner_join(y=res1.7_annotation,by="seurat_clusters") %>%
+  ggplot(aes(x=seurat_clusters,y=N,fill=CellLine))+
+  geom_bar(stat="identity",position=position_stack())+
+  scale_fill_tableau("Tableau 20")+
+  theme_classic()+
+  #facet_grid(.~CellType,scales="free_x")+
+  theme(text=element_text(size=12))
+
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/res1.7_summary.tiff"),
+       height=4,width=6,dpi=600,device="tiff",limitsize = TRUE)
+```
+
+
+## Marker expression - res1.7
+```{r include=FALSE}
+marker_list<-read.xlsx(paste0(PROJECT_DIR,"/Marker list.xlsx"),sheet=1)
+
+  
+sapply(levels(factor(marker_list$CellClass)),FUN=function(x){
+  if(sum(FUN_gene(subset(marker_list,CellClass==x)$gene)%in%rownames(temp))>2){
+    tempdata<-VlnPlot(seurat_res1.7,features=FUN_gene(subset(marker_list,CellClass==x)$gene),
+               stack=TRUE,fill.by="ident",flip=TRUE)$data
+    tempdata$feature<-str_split(tempdata$feature,"-E",simplify=TRUE)[,1]
+    
+    p<-ggplot(tempdata,aes(x=ident,y=expression,fill=ident))+
+      geom_violin(scale="width")+
+      facet_grid(feature~.)+
+      scale_fill_manual(values=colour_palette)+
+      theme_classic()+
+      theme(legend.position="none")
+    
+    ggsave(plot=p,
+           filename=paste0(FIGURE_OUTPUTDIR,"/Marker expression by res1.7/res1.7_",x,".tiff"),
+           height=length(subset(marker_list,CellClass==x)$gene)*1.5,
+           width=length(levels(factor(temp$seurat_clusters)))*1.5,units="cm",
+           dpi=300,device="tiff",limitsize = FALSE)}
+  })
+
+```
+
+
+
+### Specific marker expression
+```{r}
+res1.7_annotation<-fread(file=paste0(ANALYSIS_OUTPUTDIR,"/res1.7 annotation.txt"),data.table=FALSE)
+res1.7_annotation$seurat_clusters<-as.factor(res1.7_annotation$seurat_clusters)
+
+DefaultAssay(seurat_res1.7)<-"RNA"
+
+
+sapply(levels(factor(temp_feature$Lineage)),FUN=function(x){
+  print(x)
+    tempdata<-VlnPlot(seurat_res1.7,features=FUN_gene(subset(temp_feature,Lineage==x)$Gene),stack=TRUE,fill.by="ident",flip=TRUE)$data
+    tempdata$feature<-str_split(tempdata$feature,"-E",simplify=TRUE)[,1]
+    tempdata<-inner_join(tempdata,res1.7_annotation,by=c("ident"="seurat_clusters"))
+    
+    p<-ggplot(tempdata,aes(x=ident,y=expression,fill=ident))+
+      geom_violin(scale="width",fill=NA,colour="black")+
+      geom_point(shape=21,position=position_jitterdodge(jitter.width=5,dodge.width=2),size=1,alpha=0.75,stroke=0)+
+      facet_grid(feature~CellType,scales="free_x",space="free")+
+      scale_fill_manual(values=colour_palette)+
+      theme_classic()+
+      theme(legend.position="left")
+    
+      ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Selected markers by res1.7/res1.7_",x,".tiff"),height=length(subset(temp_feature,Lineage==x)$Gene)*2,width=length(levels(factor(tempdata$ident)))*1.5+2,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+  })
+
+```
+
+
+## Heatmap for annotation
+```{r}
+res1.7_annotation<-fread(file=paste0(ANALYSIS_OUTPUTDIR,"/res1.7 annotation.txt"),data.table=FALSE)
+res1.7_annotation$seurat_clusters<-as.factor(res1.7_annotation$seurat_clusters)
+
+temp_feature<-data.frame(Gene=c(
+  "S100B","GFAP","AQP4","GJA1","GJB6","ALDH1L1",
+  "EGFR","SOX9","HES1","CD44","NFIA","FGFR3",
+  "ASCL1","DCX","CD24",
+  "RBFOX3","SNAP25","STMN2","SYT1","TUBB3",
+  "TBR1","SLC17A7","SLC17A6","EOMES",
+  "NKX2-1","LHX6","LHX8","SOX6","SATB1","OLIG2","TOX3","PLS3",
+  "NR2F2","PROX1","SP8",
+  "DLX2","DLX5","NR2F1",
+  "BCL11B","NOLZ1","FOXP1","FOXP2","ISL1","PPP1R1B","DRD1","DRD2","PENK","TAC1",
+  "GAD1","GAD2","CALB2","CALB1","SLC6A1","GABBR1","GABBR2","DLX6-AS1",
+  "RELN","SST","PVALB","VIP","HTR3A","TAC1","CCK","NPY","ERBB4","CXCR4","LAMP5",
+  "LMX1A","TH","KCNJ6","SLC18A1","SLC6A3",
+  "TTYH1","RFX4","NESTIN","SOX2","PTN","FABP7",
+  "HOXA2","PAX2","OTX2","GBX2","FOXG1",
+  "PAX3","NKX2-1","NKX2-2","NKX6-1","PAX6","SIX6","SIX3","FOXA2",
+  "SOX10","PDGFRA","MBP"),
+  Lineage=c(rep("Astro",6),rep("APC",6),rep("NB",3),rep("Neuron",5),
+            rep("Glut",4),rep("MGE",8),rep("CGE",3),rep("GE",3),
+            rep("LGE",10),rep("GABA",8),rep("IntSub",11),rep("mDA",5),rep("RGL",6),
+            rep("R-C",5),rep("D-V",8),rep("ODC",3)))
+
+expression_matrix<-GetAssayData(seurat_res1.7[FUN_gene(unique(temp_feature$Gene)),],assay="RNA",slot="data")
+ROWNAMES_TEMP<-rownames(expression_matrix)
+COLNAMES_TEMP<-colnames(expression_matrix)
+expression_matrix<-as.data.table(expression_matrix[,colSums(expression_matrix)>0])
+expression_matrix$gene<-ROWNAMES_TEMP
+expression_matrix$gene<-str_split(expression_matrix$gene,"-E",simplify=TRUE)[,1]
+
+expression_matrix<-melt(expression_matrix,id.vars="gene") %>%
+  full_join(y=temp_feature,by=c("gene"="Gene")) %>%
+  left_join(y=seurat_res1.7@meta.data,by=c("variable"="CellID")) %>%
+  left_join(y=res1.7_annotation,by="seurat_clusters")
+
+expression_matrix<-expression_matrix[!is.na(expression_matrix$value),]
+
+p<-ggplot(data=expression_matrix,
+          aes(x=reorder(variable,nCount_RNA),y=gene,fill=scale(value)))+
+  geom_raster()+
+  scale_fill_gradient(low="white",high="#ae017e")+
+  facet_grid(Lineage~CellType+`D-V`+seurat_clusters,scales="free",space="free")+
+  labs(y="",x="",fill="")+
+  theme_bw()+
+  theme(plot.margin=unit(c(0,0,0,0),"cm"),
+        axis.text.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text=element_text(size=8),
+        panel.spacing = unit(0.05, "lines"))
+
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Key markers_heatmap.tiff"),units="cm",width=18,height=20,dpi=300)
+```
+
+
+
+# res1.7 comparison
+## AraC comparison
+```{r}
+DEG_AraC<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11)),
+  prefix="AraC_Neuron",
+  ident.var="AraC",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("Chip","Patient"))
+
+DEG_AraC$avg_log2FC_new[DEG_AraC$cluster==TRUE]<-DEG_AraC$avg_log2FC[DEG_AraC$cluster==TRUE]
+DEG_AraC$avg_log2FC_new[DEG_AraC$cluster==FALSE]<-(-DEG_AraC$avg_log2FC[DEG_AraC$cluster==FALSE])
+
+p<-DEG_AraC %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/DEG_AraC_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_AraC,p_val_adj<0.05)$cluster))
+```
+### PT1
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+DEG_AraC_PT1<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Patient=="PT1"),
+  prefix="AraC_PT1_Neuron",
+  ident.var="AraC",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("Chip"))
+
+DEG_AraC_PT1$avg_log2FC_new[DEG_AraC_PT1$cluster==TRUE]<-DEG_AraC_PT1$avg_log2FC[DEG_AraC_PT1$cluster==TRUE]
+DEG_AraC_PT1$avg_log2FC_new[DEG_AraC_PT1$cluster==FALSE]<-(-DEG_AraC_PT1$avg_log2FC[DEG_AraC_PT1$cluster==FALSE])
+
+p<-DEG_AraC_PT1 %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/AraC_PT1_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_AraC_PT1,p_val_adj<0.05)$cluster))
+```
+### PT2
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+
+DEG_AraC_PT2<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Patient=="PT2"),
+  prefix="AraC_PT2_Neuron",
+  ident.var="AraC",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("Chip"))
+
+DEG_AraC_PT2$avg_log2FC_new[DEG_AraC_PT2$cluster==TRUE]<-DEG_AraC_PT2$avg_log2FC[DEG_AraC_PT2$cluster==TRUE]
+DEG_AraC_PT2$avg_log2FC_new[DEG_AraC_PT2$cluster==FALSE]<-(-DEG_AraC_PT2$avg_log2FC[DEG_AraC_PT2$cluster==FALSE])
+
+p<-DEG_AraC_PT2 %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/AraC_PT2_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_AraC_PT2,p_val_adj<0.05)$cluster))
+```
+### Mutant
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+DEG_AraC_Mutant<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Genotype=="Mutant"),
+  prefix="AraC_Mutant_Neuron",
+  ident.var="AraC",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("Chip","Patient"))
+
+DEG_AraC_Mutant$avg_log2FC_new[DEG_AraC_Mutant$cluster==TRUE]<-DEG_AraC_Mutant$avg_log2FC[DEG_AraC_Mutant$cluster==TRUE]
+DEG_AraC_Mutant$avg_log2FC_new[DEG_AraC_Mutant$cluster==FALSE]<-(-DEG_AraC_Mutant$avg_log2FC[DEG_AraC_Mutant$cluster==FALSE])
+
+p<-DEG_AraC_Mutant %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/AraC_Mutant_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_AraC_Mutant,p_val_adj<0.05)$cluster))
+```
+### Corrected
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+
+DEG_AraC_Corrected<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Genotype=="Corrected"),
+  prefix="AraC_Corrected_Neuron",
+  ident.var="AraC",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("Chip","Patient"))
+
+DEG_AraC_Corrected$avg_log2FC_new[DEG_AraC_Corrected$cluster==TRUE]<-DEG_AraC_Corrected$avg_log2FC[DEG_AraC_Corrected$cluster==TRUE]
+DEG_AraC_Corrected$avg_log2FC_new[DEG_AraC_Corrected$cluster==FALSE]<-(-DEG_AraC_Corrected$avg_log2FC[DEG_AraC_Corrected$cluster==FALSE])
+
+p<-DEG_AraC_Corrected %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/AraC_Corrected_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_AraC_Corrected,p_val_adj<0.05)$cluster))
+```
+### Upset plot
+```{r}
+temp<-lapply(ls(pattern="DEG_AraC"),FUN=function(x){
+  DEG<-eval(parse(text=x))
+  DEG<-subset(DEG,p_val_adj<0.05)
+  DEG$Comparison<-x
+  DEG$cluster_comparison<-paste(DEG$cluster,DEG$Comparison,sep="_")
+  return(DEG)
+})%>%rbindlist()%>%as.data.frame()
+
+cl<-makeCluster(detectCores()-1)
+clusterExport(cl,c("temp"))
+temp<-parLapply(cl,levels(factor(temp$cluster_comparison)),fun=function(x){
+  temp.x<-data.frame(sapply(unique(temp$gene),FUN=function(y){y%in%subset(temp,cluster_comparison==x)$gene}))
+  names(temp.x)<-x
+  temp.x
+})
+stopCluster(cl)
+temp<-list.cbind(temp)
+var.list1<-names(temp)
+
+p<-ComplexUpset::upset(data=temp,
+                       intersect=var.list1,
+                       name="Genesets",
+                       width_ratio=0.1,
+                       sort_sets=FALSE,
+                       min_size=1,
+                       keep_empty_groups=FALSE,
+                       encode_sets=FALSE,
+                       sort_intersections_by='degree',
+                       guides='over',
+                       set_sizes=FALSE)
+
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/DEG/DEG_AraC_Upset of different comparisions.tiff"),units="cm",width=20,height=12,dpi=600)
+```
+
+
+
+## Chip comparison
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+
+DEG_Chip<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11)),
+  prefix="Chip_Neuron",
+  ident.var="Chip",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("AraC","Patient"))
+
+DEG_Chip$avg_log2FC_new[DEG_Chip$cluster=="A"]<-DEG_Chip$avg_log2FC[DEG_Chip$cluster=="A"]
+DEG_Chip$avg_log2FC_new[DEG_Chip$cluster=="B"]<-(-DEG_Chip$avg_log2FC[DEG_Chip$cluster=="B"])
+
+p<-DEG_Chip %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nChip A vs B",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/DEG_Chip_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_Chip,p_val_adj<0.05)$cluster))
+```
+### PT1
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+DEG_Chip_PT1<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Patient=="PT1"),
+  prefix="Chip_PT1_Neuron",
+  ident.var="Chip",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("AraC"))
+
+DEG_Chip_PT1$avg_log2FC_new[DEG_Chip_PT1$cluster=="A"]<-DEG_Chip_PT1$avg_log2FC[DEG_Chip_PT1$cluster=="A"]
+DEG_Chip_PT1$avg_log2FC_new[DEG_Chip_PT1$cluster=="B"]<-(-DEG_Chip_PT1$avg_log2FC[DEG_Chip_PT1$cluster=="B"])
+
+p<-DEG_Chip_PT1 %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/Chip_PT1_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_Chip_PT1,p_val_adj<0.05)$cluster))
+```
+### PT2
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+
+DEG_Chip_PT2<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Patient=="PT2"),
+  prefix="Chip_PT2_Neuron",
+  ident.var="Chip",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("AraC"))
+
+DEG_Chip_PT2$avg_log2FC_new[DEG_Chip_PT2$cluster=="A"]<-DEG_Chip_PT2$avg_log2FC[DEG_Chip_PT2$cluster=="A"]
+DEG_Chip_PT2$avg_log2FC_new[DEG_Chip_PT2$cluster=="B"]<-(-DEG_Chip_PT2$avg_log2FC[DEG_Chip_PT2$cluster=="B"])
+
+p<-DEG_Chip_PT2 %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/Chip_PT2_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_Chip_PT2,p_val_adj<0.05)$cluster))
+```
+### Mutant
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+DEG_Chip_Mutant<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Genotype=="Mutant"),
+  prefix="Chip_Mutant_Neuron",
+  ident.var="Chip",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("AraC","Patient"))
+
+DEG_Chip_Mutant$avg_log2FC_new[DEG_Chip_Mutant$cluster=="A"]<-DEG_Chip_Mutant$avg_log2FC[DEG_Chip_PT1$cluster=="A"]
+DEG_Chip_Mutant$avg_log2FC_new[DEG_Chip_Mutant$cluster=="B"]<-(-DEG_Chip_Mutant$avg_log2FC[DEG_Chip_Mutant$cluster=="B"])
+
+p<-DEG_Chip_Mutant %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/Chip_Mutant_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_Chip_Mutant,p_val_adj<0.05)$cluster))
+```
+### Corrected
+```{r}
+#seurat_res1.7<-seurat_normalised_cluster_list$`1`
+
+DEG_Chip_Corrected<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Genotype=="Corrected"),
+  prefix="Chip_Corrected_Neuron",
+  ident.var="Chip",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="MAST",latent.vars=c("AraC","Patient"))
+
+DEG_Chip_Corrected$avg_log2FC_new[DEG_Chip_Corrected$cluster=="A"]<-DEG_Chip_Corrected$avg_log2FC[DEG_Chip_PT1$cluster=="A"]
+DEG_Chip_Corrected$avg_log2FC_new[DEG_Chip_Corrected$cluster=="B"]<-(-DEG_Chip_Corrected$avg_log2FC[DEG_Chip_Mutant$cluster=="B"])
+
+
+p<-DEG_Chip_Corrected %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nTreated vs Untreated",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/Chip_Corrected_Neuron_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_Chip_Corrected,p_val_adj<0.05)$cluster))
+```
+
+### Upset plot
+```{r}
+temp<-lapply(ls(pattern="DEG_Chip"),FUN=function(x){
+  DEG<-eval(parse(text=x))
+  DEG<-subset(DEG,p_val_adj<0.05)
+  DEG$Comparison<-x
+  DEG$cluster_comparison<-paste(DEG$cluster,DEG$Comparison,sep="_")
+  return(DEG)
+})%>%rbindlist()%>%as.data.frame()
+
+cl<-makeCluster(detectCores()-1)
+clusterExport(cl,c("temp"))
+temp<-parLapply(cl,levels(factor(temp$cluster_comparison)),fun=function(x){
+  temp.x<-data.frame(sapply(unique(temp$gene),FUN=function(y){y%in%subset(temp,cluster_comparison==x)$gene}))
+  names(temp.x)<-x
+  temp.x
+})
+stopCluster(cl)
+temp<-list.cbind(temp)
+var.list1<-names(temp)
+
+p<-ComplexUpset::upset(data=temp,
+                       intersect=var.list1,
+                       name="Genesets",
+                       width_ratio=0.1,
+                       sort_sets=FALSE,
+                       min_size=1,
+                       keep_empty_groups=FALSE,
+                       encode_sets=FALSE,
+                       sort_intersections_by='degree',
+                       guides='over',
+                       set_sizes=FALSE)
+
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/DEG/DEG_Chip_Upset of different comparisions.tiff"),units="cm",width=20,height=12,dpi=600)
+```
+
+## Mutant vs WT
+### PT1-MGE
+```{r}
+DEG_MGE_PT1_disease<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,3,11) & Patient=="PT1"),
+  prefix="MGE_PT1_disease",
+  ident.var="Genotype",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="wilcox",latent.vars=NULL)
+
+DEG_MGE_PT1_disease$avg_log2FC_new[DEG_MGE_PT1_disease$cluster=="Mutant"]<-DEG_MGE_PT1_disease$avg_log2FC[DEG_MGE_PT1_disease$cluster=="Mutant"]
+DEG_MGE_PT1_disease$avg_log2FC_new[DEG_MGE_PT1_disease$cluster=="Corrected"]<-(-DEG_MGE_PT1_disease$avg_log2FC[DEG_MGE_PT1_disease$cluster=="Corrected"])
+
+p<-DEG_MGE_PT1_disease %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nMutant vs Corrected",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/DEG_MGE_PT1_disease_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_MGE_PT1_disease,p_val_adj<0.05)$cluster))
+```
+
+### PT1-Neuron
+```{r}
+DEG_Neuron_PT1_disease<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Patient=="PT1"),
+  prefix="Neuron_PT1_disease",
+  ident.var="Genotype",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="wilcox")
+
+DEG_Neuron_PT1_disease$avg_log2FC_new[DEG_Neuron_PT1_disease$cluster=="Mutant"]<-DEG_Neuron_PT1_disease$avg_log2FC[DEG_Neuron_PT1_disease$cluster=="Mutant"]
+DEG_Neuron_PT1_disease$avg_log2FC_new[DEG_Neuron_PT1_disease$cluster=="Corrected"]<-(-DEG_Neuron_PT1_disease$avg_log2FC[DEG_Neuron_PT1_disease$cluster=="Corrected"])
+
+p<-DEG_Neuron_PT1_disease %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nMutant vs Corrected",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/DEG_Neuron_PT1_disease_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_Neuron_PT1_disease,p_val_adj<0.05)$cluster))
+```
+### PT2-MGE
+```{r}
+DEG_MGE_PT2_disease<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,3,11) & Patient=="PT2"),
+  prefix="MGE_PT2_disease",
+  ident.var="Genotype",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="wilcox")
+
+DEG_MGE_PT2_disease$avg_log2FC_new[DEG_MGE_PT2_disease$cluster=="Mutant"]<-DEG_MGE_PT2_disease$avg_log2FC[DEG_MGE_PT2_disease$cluster=="Mutant"]
+DEG_MGE_PT2_disease$avg_log2FC_new[DEG_MGE_PT2_disease$cluster=="Corrected"]<-(-DEG_MGE_PT2_disease$avg_log2FC[DEG_MGE_PT2_disease$cluster=="Corrected"])
+
+p<-DEG_MGE_PT2_disease %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nMutant vs Corrected",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/DEG_MGE_PT2_disease_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_MGE_PT2_disease,p_val_adj<0.05)$cluster))
+```
+
+### PT2-Neuron
+```{r}
+DEG_Neuron_PT2_disease<-FUN_DEG_comparison(
+  query=subset(seurat_res1.7,seurat_clusters%in%c(0,2,3,8,10,11) & Patient=="PT2"),
+  prefix="Neuron_PT2_disease",
+  ident.var="Genotype",comparison=NULL,
+  assay="RNA",slot="data",logFC=0.25,
+  test.use="wilcox")
+
+DEG_Neuron_PT2_disease$avg_log2FC_new[DEG_Neuron_PT2_disease$cluster=="Mutant"]<-DEG_Neuron_PT2_disease$avg_log2FC[DEG_Neuron_PT2_disease$cluster=="Mutant"]
+DEG_Neuron_PT2_disease$avg_log2FC_new[DEG_Neuron_PT2_disease$cluster=="Corrected"]<-(-DEG_Neuron_PT2_disease$avg_log2FC[DEG_Neuron_PT2_disease$cluster=="Corrected"])
+
+p<-DEG_Neuron_PT2_disease %>%
+  ggplot(aes(x=avg_log2FC_new,y=-log10(p_val_adj),fill=pctratio))+
+  geom_point(shape=21,,alpha=0.75,stroke=0.25,size=0.75)+
+  geom_vline(xintercept=0,linetype="dashed")+
+  geom_hline(yintercept=-log10(0.05),linetype="dashed")+
+  scale_fill_gradient2(midpoint=0,low="black",mid="white",high="red",trans="log10")+
+  labs(x="log2 Fold change\nMutant vs Corrected",y="-log10 p adjusted",fill="Ratio of\npositive")+
+  theme_classic()+
+  theme(text=element_text(size=8))
+ggsave(filename=paste0(FIGURE_OUTPUTDIR,"/DEG/DEG_Neuron_PT2_disease_volcano.tiff"),
+       plot=p,units="cm",dpi=600,width=7,height=5)
+
+summary(factor(subset(DEG_Neuron_PT2_disease,p_val_adj<0.05)$cluster))
+```
+
+## Conserved MGE
+```{r}
+seurat_temp<-subset(seurat_res1.7,seurat_clusters%in%c(0,3,11))
+Idents(seurat_temp)<-"Genotype"
+
+DEG_MGE_disease<-FindConservedMarkers(seurat_temp,ident.1="Mutant",ident.2="Corrected",grouping.var="Patient")
+DEG_MGE_disease$gene<-rownames(DEG_MGE_disease)
+write.xlsx(DEG_MGE_disease,file=paste0(ANALYSIS_OUTPUTDIR,"/DEG/DEG_MGE_disease.xlsx"))
+
+DEG_MGE_disease_subset<-subset(DEG_MGE_disease,max_pval<0.05 & PT1_avg_log2FC*PT2_avg_log2FC>0)
+
+query_temp<-list(Mutant=FUN_geneid(subset(DEG_MGE_disease_subset,PT1_avg_log2FC>0)$gene),Corrected=FUN_geneid(subset(DEG_MGE_disease_subset,PT1_avg_log2FC<0)$gene))
+
+DEG_MGE_disease_GO<-FUN_Geneset_Overlap(query=query_temp,universe=FUN_geneid(rownames(seurat_res1.7)),prefix="DEG_MGE_disease_GO",OrgDb=org.Hs.eg.db,ont="All",keyType="SYMBOL",minGSSize=50,maxGSSize=500,nGO=20,pAdjustMethod="BH",pvalueCutoff=0.01,qvalueCutoff=0.05,pthreshold=0.05)
+```
+
+
+
+# SCENIC
+## Preparation
+```{r}
+library(SCENIC)
+exprMat<-as.matrix(GetAssayData(seurat_res1.7))
+rownames(exprMat)<-make.unique(str_split(rownames(exprMat),"-E",simplify=TRUE)[,1])
+
+cellInfo<-as.data.frame(seurat_res1.7@meta.data)
+
+
+save(list=c("exprMat","cellInfo"),file=paste0(SAVE_DIR,"/ForSCENIC.RData"))
+```
+## Preparing SCENIC
+```{r}
+# Initialise SCENIC settings
+
+org <- "hgnc"
+dbDir <- paste0(PROJECT_DIR,"/SCENIC") # RcisTarget databases location
+data(defaultDbNames)
+defaultDbNames[[org]][1]<-"hg38_refseq-r80_500bp_up_and_100bp_down_tss.mc9nr.feather"
+defaultDbNames[[org]][2]<-"hg38_refseq-r80_10kb_up_and_down_tss.mc9nr.feather"
+dbs <- defaultDbNames[[org]]
+
+data(list="motifAnnotations_hgnc_v9",package="RcisTarget")
+motifAnnotations_hgnc<-motifAnnotations_hgnc_v9
+scenicOptions <- initializeScenic(org=org, dbDir=dbDir, dbs=dbs, datasetTitle="SCENIC for AstrocyteNeuron", nCores=32) 
+
+saveRDS(scenicOptions, file=paste0(SAVE_DIR,"/scenicOptions2.Rds"))
+```
+
+
+## Regulon enrichment plot
+```{r}
+regulonAUC<-readRDS(file=paste0(PROJECT_DIR,"/SCENIC/int/3.4_regulonAUC.Rds"))
+
+seurat_res1.7[["AUC"]]<-CreateAssayObject(counts=regulonAUC@assays@data@listData[["AUC"]])
+
+AUC<-as.data.frame(t(regulonAUC@assays@data@listData[["AUC"]]))
+AUC$CellID<-rownames(AUC)
+AUC<-melt(regulonAUC@assays@data@listData[["AUC"]],id.vars="CellID")
+names(AUC)<-c("regulon","CellID","value")
+AUC$regulon_tf<-str_split(AUC$regulon," ",simplify=TRUE)[,1]
+AUC$regulon_tf<-str_split(AUC$regulon_tf,"_",simplify=TRUE)[,1]
+
+res1.7_annotation<-fread(file=paste0(ANALYSIS_OUTPUTDIR,"/res1.7 annotation.txt"),data.table=FALSE)
+res1.7_annotation$seurat_clusters<-as.factor(res1.7_annotation$seurat_clusters)
+
+AUC<-inner_join(AUC,seurat_res1.7@meta.data,by="CellID")
+AUC<-inner_join(AUC,res1.7_annotation,by="seurat_clusters")
+
+lapply(levels(factor(AUC$regulon_tf)),FUN=function(x){
+  temp<-subset(AUC,regulon_tf==x)
+  p<-ggplot(data=temp,
+       aes(x=seurat_clusters,y=value,fill=seurat_clusters))+
+      geom_violin(scale="width")+
+      scale_fill_manual(values=colour_palette)+
+      facet_grid(regulon~CellType+`D-V`,space="free",scales="free_x")+
+      theme_bw()+
+      theme(legend.position = "non")+
+      labs(y="AUC",title=x)
+  ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/SCENIC_AUC_tf/",x,".tiff"),width=16,height=length(levels(factor(temp$regulon)))*4+1,units="cm",dpi=300,device="tiff",limitsize = TRUE)
+})
+
+
+# Combined plots
+MARKERS<-data.frame(gene=c("LMX1A","FOXA1","OTX2","LMX1B","EN1","ZNF91",
+                             "ASCL1","SOX4","SOX11",
+                             "NFIA","NFIB","HES1","SOX9","ATF3","RUNX2","LHX2","SRF","HCFC1",
+                        "ERG","MYOD1","MYOG","MEF2C","FOXC1","HOXA9","LEF1","PAX3","SNAI1"),
+                      cell_type=c(rep("mDA",6),
+                                rep("Neuron",3),
+                                rep("Astrocyte",9),
+                                rep("Mesodermal",9)))
+seurat_cluster_res0.7$Lineage_Type<-paste(seurat_cluster_res0.7$Lineage,seurat_cluster_res0.7$Type,sep="_")
+
+  sapply(levels(factor(MARKERS$cell_type)),FUN=function(x){
+    features<-unlist(sapply(subset(MARKERS,cell_type==x)$gene,FUN=function(y){grep(pattern=y,x=rownames(seurat_cluster_res0.7[["AUC"]]))}))
+    p<-VlnPlot(seurat_cluster_res0.7,assay="AUC",slot="counts",features=rownames(seurat_cluster_res0.7[["AUC"]])[features],stack=TRUE,fill.by="ident",flip=TRUE,split.by="Lineage_Type")
+    temp_data<-p$data
+    temp_data$tf<-mapvalues(temp_data$feature,from=str_replace(string=regulon_match_list$regulon,pattern="_",replacement="-"),to=regulon_match_list$tf)
+AUC<-inner_join(AUC,seurat_cluster_res0.7@meta.data,by="Barcode")
+    p_export<-ggplot(data=temp_data,
+                     aes(x=ident,y=expression,fill=split))+
+      geom_violin()+
+      facet_grid(tf~split,space="free_x",scales="free")+
+      theme_bw()+
+      theme(legend.position="right")+
+      scale_fill_tableau("Tableau 10")+
+      labs(x="seurat_clusters",y="AUC",title=x,fill="Cell type")+
+      guides(fill=guide_legend(ncol=1))+
+      scale_y_continuous(n.breaks=3)
+      ggsave(plot=p_export,filename=paste0(FIGURE_OUTPUTDIR,"/SCENIC_AUC/",x,".tiff"),height=length(levels(factor(temp_data$tf)))*2,width=length(levels(factor(seurat_cluster_res0.7$seurat_clusters)))*1+5,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+  })
+```
+
+## DER analysis
+```{r}
+regulonAUC<-readRDS(file=paste0(PROJECT_DIR,"/SCENIC/int/3.4_regulonAUC.Rds"))
+regulonAUC_temp<-regulonAUC[,colnames(regulonAUC)%in%colnames(seurat_res1.7)]
+DER_res1.7<-FUN_DER_enrichment(seurat=seurat_res1.7,
+                               AUC.matrix=regulonAUC_temp,
+                               ident.var="seurat_clusters",
+                               prefix="DER_res1.7")
+
+write.xlsx(DER_res1.7,file=paste0(ANALYSIS_OUTPUTDIR,"/DER/DER_res1.7"))
+```
+
+
+## Use SCENIC for clustering
+```{r}
+regulonAUC<-readRDS(file=paste0(PROJECT_DIR,"/SCENIC/int/3.4_regulonAUC.Rds"))
+regulonAUC<-regulonAUC@assays@data@listData[["AUC"]]
+seurat_res1.7[["AUC"]]<-CreateAssayObject(counts=regulonAUC)
+
+seurat_res1.7_AUC<-seurat_res1.7
+DefaultAssay(seurat_res1.7_AUC)<-"AUC"
+seurat_res1.7_AUC<-ScaleData(seurat_res1.7_AUC,assay="AUC")
+seurat_res1.7_AUC<-RunPCA(seurat_res1.7_AUC,features=rownames(seurat_res1.7_AUC),assay="AUC")
+seurat_res1.7_AUC<-RunHarmony(seurat_res1.7_AUC,features=rownames(seurat_res1.7_AUC),assay="AUC",group.by.vars=c("AraC","Chip","Patient"),reduction.save="harmony_AUC")
+seurat_res1.7_AUC<-RunUMAP(seurat_res1.7_AUC,features=rownames(seurat_res1.7_AUC),assay="AUC",reduction.name="umap_AUC",reduction="harmony_AUC")
+seurat_res1.7_AUC<-FindNeighbors(seurat_res1.7_AUC,features=rownames(seurat_res1.7_AUC),assay="AUC",reduction="harmony_AUC",graph.name="AUC_graph")
+seurat_res1.7_AUC<-FindClusters(seurat_res1.7_AUC,assay="AUC",resolution=0.5,graph.name="AUC_graph")
+
+```
+### Clustering testing
+```{r}
+lapply(seq(1:10)/10,FUN=function(x){
+  temp<-FindClusters(seurat_res1.7_AUC,assay="AUC",resolution=x,graph.name="AUC_graph")
+  temp$seurat_clusters_RNA<-as.factor(as.numeric(mapvalues(temp$CellID,from=seurat_res1.7$CellID,to=seurat_res1.7$seurat_clusters))-1)
+  temp$seurat_clusters_AUC<-temp$seurat_clusters
+
+  p<-(DimPlot(temp,label=TRUE,group.by="seurat_clusters_RNA",reduction="umap")+scale_colour_tableau("Tableau 20"))+
+    (DimPlot(temp,label=TRUE,group.by="seurat_clusters_AUC",reduction="umap")+scale_colour_tableau("Tableau 20"))+
+    (DimPlot(temp,label=TRUE,group.by="seurat_clusters_RNA",reduction="umap_AUC")+scale_colour_tableau("Tableau 20"))+
+    (DimPlot(temp,label=TRUE,group.by="seurat_clusters_AUC",reduction="umap_AUC")+scale_colour_tableau("Tableau 20"))
+  ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/UMAP_clustering_RNA_vs_AUC/res",x,".tiff"),height=16,width=18,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+  
+  
+  res1.7_annotation<-fread(file=paste0(ANALYSIS_OUTPUTDIR,"/res1.7 annotation.txt"),data.table=FALSE)
+  res1.7_annotation$seurat_clusters<-as.factor(res1.7_annotation$seurat_clusters)
+      
+  p<-data.frame(temp@meta.data) %>%
+    group_by(seurat_clusters_RNA,seurat_clusters_AUC) %>%
+    summarise(N=n()) %>%
+    inner_join(y=data.frame(temp@meta.data) %>%
+                 group_by(seurat_clusters_RNA) %>%
+                 summarise(N_RNA=n()),by="seurat_clusters_RNA") %>%
+        inner_join(y=res1.7_annotation,by=c("seurat_clusters_RNA"="seurat_clusters")) %>%
+        ggplot(aes(x=seurat_clusters_AUC,y=seurat_clusters_RNA))+
+        geom_tile(aes(fill=N/N_RNA),colour="black")+
+        geom_text(aes(label=N))+
+        scale_fill_gradient(low="white",high="red")+
+        theme_classic()+
+        facet_grid(CellType~.,scales="free",space="free",switch="y")
+      
+      ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/UMAP_clustering_RNA_vs_AUC/res",x,"_Clustering_RNA_vs_AUC.tiff"),height=8,width=8,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+
+})
+```
+
+
+### Marker expression
+```{r}
+
+sapply(levels(factor(temp_feature$Lineage)),FUN=function(x){
+  print(x)
+    DefaultAssay(seurat_res1.7_AUC)<-"RNA"
+    tempdata<-VlnPlot(seurat_res1.7_AUC,features=FUN_gene(subset(temp_feature,Lineage==x)$Gene),stack=TRUE,group.by="seurat_clusters_AUC",fill.by="ident",flip=TRUE)$data
+    tempdata$feature<-str_split(tempdata$feature,"-E",simplify=TRUE)[,1]
+    
+    p<-ggplot(tempdata,aes(x=ident,y=expression,fill=ident))+
+      geom_violin(scale="width",fill=NA,colour="black")+
+      geom_point(shape=21,position=position_jitterdodge(jitter.width=1),size=0.5,alpha=0.75,stroke=0)+
+      facet_grid(feature~.,scales="free_x",space="free")+
+      scale_fill_manual(values=colour_palette)+
+      theme_classic()+
+      theme(legend.position="left")
+    
+      ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Selected markers by AUC/AUC_",x,".tiff"),height=length(subset(temp_feature,Lineage==x)$Gene)*1.7,width=length(levels(factor(tempdata$ident)))*1.5,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+  })
+
+```
+
+
+### Clustering comparison for res0.5
+```{r}
+p<-data.frame(seurat_res1.7_AUC@meta.data) %>%
+  group_by(seurat_clusters_RNA,seurat_clusters_AUC) %>%
+  summarise(N=n()) %>%
+  inner_join(y=data.frame(seurat_res1.7_AUC@meta.data) %>%
+               group_by(seurat_clusters_RNA) %>%
+               summarise(N_RNA=n()),by="seurat_clusters_RNA") %>%
+  subset(N>10) %>%
+  inner_join(y=res1.7_annotation,by=c("seurat_clusters_RNA"="seurat_clusters")) %>%
+  ggplot(aes(x=seurat_clusters_AUC,y=seurat_clusters_RNA))+
+  geom_tile(aes(fill=N/N_RNA),colour="black")+
+  geom_text(aes(label=N))+
+  scale_fill_gradient(low="white",high="red")+
+  theme_classic()+
+  facet_grid(CellType~.,scales="free",space="free",switch="y")
+
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Clustering_RNA_vs_AUC_filtered.tiff"),height=10,width=10,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+
+
+p<-(DimPlot(seurat_res1.7_AUC,label=TRUE,group.by="seurat_clusters_RNA",reduction="umap",pt.size=0.25)+scale_colour_tableau("Tableau 20"))+
+    (DimPlot(seurat_res1.7_AUC,label=TRUE,group.by="seurat_clusters_AUC",reduction="umap",pt.size=0.25)+scale_colour_tableau("Tableau 20"))+
+    (DimPlot(seurat_res1.7_AUC,label=TRUE,group.by="seurat_clusters_RNA",reduction="umap_AUC",pt.size=0.25)+scale_colour_tableau("Tableau 20"))+
+    (DimPlot(seurat_res1.7_AUC,label=TRUE,group.by="seurat_clusters_AUC",reduction="umap_AUC",pt.size=0.25)+scale_colour_tableau("Tableau 20"))
+  ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/UMAP_clustering_RNA_vs_AUC.tiff"),height=16,width=18,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+  
+temp<-data.frame(seurat_res1.7_AUC@meta.data) %>%
+  group_by(seurat_clusters_RNA,seurat_clusters_AUC) %>%
+  summarise(N=n()) %>%
+  inner_join(y=data.frame(seurat_res1.7_AUC@meta.data) %>%
+               group_by(seurat_clusters_RNA) %>%
+               summarise(N_RNA=n()),by="seurat_clusters_RNA")%>%
+  inner_join(y=res1.7_annotation,by=c("seurat_clusters_RNA"="seurat_clusters"))
+write.xlsx(temp,file=paste0(ANALYSIS_OUTPUTDIR,"/Clustering comparison_RNA_vs_AUC_res0.5.xlsx"))
+```
+
+
+
+### Heatmap expression
+```{r}
+res1.7_annotation<-fread(file=paste0(ANALYSIS_OUTPUTDIR,"/res1.7 annotation.txt"),data.table=FALSE)
+res1.7_annotation$seurat_clusters<-as.factor(res1.7_annotation$seurat_clusters)
+
+temp_feature<-data.frame(Gene=c(
+  "S100B","GFAP","AQP4","GJA1","GJB6","ALDH1L1",
+  "EGFR","SOX9","HES1","CD44","NFIA","FGFR3",
+  "ASCL1","DCX","CD24",
+  "RBFOX3","SNAP25","STMN2","SYT1","TUBB3",
+  "TBR1","SLC17A7","SLC17A6","EOMES",
+  "NKX2-1","LHX6","LHX8","SOX6","SATB1","OLIG2","TOX3","PLS3",
+  "NR2F2","PROX1","SP8",
+  "DLX2","DLX5","NR2F1",
+  "BCL11B","NOLZ1","FOXP1","FOXP2","ISL1","PPP1R1B","DRD1","DRD2","PENK","TAC1",
+  "GAD1","GAD2","CALB2","CALB1","SLC6A1","GABBR1","GABBR2","DLX6-AS1",
+  "RELN","SST","PVALB","VIP","HTR3A","TAC1","CCK","NPY","ERBB4","CXCR4","LAMP5",
+  "LMX1A","TH","KCNJ6","SLC18A1","SLC6A3",
+  "TTYH1","RFX4","NESTIN","SOX2","PTN","FABP7",
+  "HOXA2","PAX2","OTX2","GBX2","FOXG1",
+  "PAX3","NKX2-1","NKX2-2","NKX6-1","PAX6","SIX6","SIX3","FOXA2",
+  "SOX10","PDGFRA","MBP"),
+  Lineage=c(rep("Astro",6),rep("APC",6),rep("NB",3),rep("Neuron",5),
+            rep("Glut",4),rep("MGE",8),rep("CGE",3),rep("GE",3),
+            rep("LGE",10),rep("GABA",8),rep("IntSub",11),rep("mDA",5),rep("RGL",6),
+            rep("R-C",5),rep("D-V",8),rep("ODC",3)))
+
+DefaultAssay(seurat_res1.7_AUC)<-"RNA"
+expression_matrix<-GetAssayData(seurat_res1.7_AUC[FUN_gene(unique(temp_feature$Gene)),])
+ROWNAMES_TEMP<-rownames(expression_matrix)
+COLNAMES_TEMP<-colnames(expression_matrix)
+expression_matrix<-as.data.table(expression_matrix[,colSums(expression_matrix)>0])
+expression_matrix$gene<-ROWNAMES_TEMP
+expression_matrix$gene<-str_split(expression_matrix$gene,"-E",simplify=TRUE)[,1]
+
+expression_matrix<-melt(expression_matrix,id.vars="gene") %>%
+  full_join(y=temp_feature,by=c("gene"="Gene")) %>%
+  left_join(y=seurat_res1.7_AUC@meta.data,by=c("variable"="CellID")) %>%
+  left_join(y=res1.7_annotation,by=c("seurat_clusters_RNA"="seurat_clusters"))
+
+expression_matrix<-expression_matrix[!is.na(expression_matrix$value),]
+
+p<-ggplot(data=expression_matrix,
+          aes(x=reorder(variable,nCount_RNA),y=gene,fill=scale(value)))+
+  geom_raster()+
+  scale_fill_gradient(low="white",high="#ae017e")+
+  facet_grid(Lineage~seurat_clusters_AUC+seurat_clusters_RNA,scales="free",space="free")+
+  labs(y="",x="",fill="")+
+  theme_bw()+
+  theme(plot.margin=unit(c(0,0,0,0),"cm"),
+        axis.text.x=element_blank(),
+        legend.position="none",
+        legend.title=element_blank(),
+        legend.text=element_text(size=8),
+        panel.spacing = unit(0.05, "lines"))
+
+ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Key markers_heatmap_AUC clusters.tiff"),units="cm",width=18,height=20,dpi=300)
+```
+
+# Integrated clustering
+Clustering based on both gene expression and SCENIC
+```{r}
+integrated_clustering<-read.xlsx(paste0(ANALYSIS_OUTPUTDIR,"/Clustering comparison_RNA_vs_AUC_res0.5.xlsx"))
+seurat_res1.7_AUC$seurat_clusters_new<-paste0(seurat_res1.7_AUC$seurat_clusters_RNA,seurat_res1.7_AUC$seurat_clusters_AUC)
+
+seurat_res1.7_AUC$CellType<-mapvalues(seurat_res1.7_AUC$seurat_clusters_new,from=integrated_clustering$seurat_clusters_new,to=integrated_clustering$CellType)
+seurat_res1.7_AUC$CellSubtype<-mapvalues(seurat_res1.7_AUC$seurat_clusters_new,from=integrated_clustering$seurat_clusters_new,to=integrated_clustering$CellSubtype)
+
+seurat_res1.7_AUC_subset<-subset(seurat_res1.7_AUC,CellType!="Discard")
+
+```
+## Marker expression
+```{r}
+sapply(levels(factor(temp_feature$Lineage)),FUN=function(x){
+  print(x)
+    DefaultAssay(seurat_res1.7_AUC_subset)<-"RNA"
+    tempdata<-VlnPlot(seurat_res1.7_AUC_subset,features=FUN_gene(subset(temp_feature,Lineage==x)$Gene),stack=TRUE,group.by="seurat_clusters_AUC",split.by="seurat_clusters_RNA",fill.by="ident",flip=TRUE)$data
+    tempdata$feature<-str_split(tempdata$feature,"-E",simplify=TRUE)[,1]
+    names(tempdata)[3:4]<-c("seurat_clusters_AUC","seurat_clusters_RNA")
+    
+    p<-ggplot(tempdata,aes(x=seurat_clusters_RNA,y=expression,fill=seurat_clusters_RNA))+
+      geom_violin(scale="width",fill=NA,colour="black",linewidth=0.5)+
+      geom_point(shape=21,position=position_jitterdodge(jitter.width=2),size=0.5,alpha=0.75,stroke=0)+
+      facet_grid(feature~seurat_clusters_AUC,scales="free_x",space="free")+
+      scale_fill_manual(values=colour_palette)+
+      theme_classic()+
+      theme(legend.position="bottom")+
+      guides(fill=guide_legend(nrow=3,override.aes = list(size=1.5,alpha=1)))
+    
+      ggsave(plot=p,filename=paste0(FIGURE_OUTPUTDIR,"/Selected markers by AUC_reannotated/AUC_",x,".tiff"),height=length(subset(temp_feature,Lineage==x)$Gene)*1.75,width=length(levels(factor(tempdata$seurat_clusters_AUC)))*2,units="cm",dpi=300,device="tiff",limitsize = FALSE)
+  })
+```
+
+## Number from each sample
+```{r}
+p<-seurat_res1.7_AUC_subset@meta.data %>%
+  group_by(seurat_clusters_new,Sample) %>%
+  summarise(N=n()) %>%
+  inner_join(y=seurat_res1.7_AUC_subset@meta.data %>% group_by(Sample) %>% summarise(NumCell=n()),by="Sample") %>%
+  inner_join(y=sample_metadata,by="Sample") %>%
+  inner_join(y=subset(integrated_clustering[,c(1,2,5,6,7,8,9)],CellType!="Discard"),by="seurat_clusters_new") %>%
+  ggplot(aes(x=seurat_clusters_new,y=Sample,fill=N/NumCell))+
+  geom_tile(colour="black")+
+  geom_text(aes(label=N))+
+  scale_fill_gradient(low="white",high="red")+
+  facet_grid(CellLine~seurat_clusters_RNA,scales="free",space="free")+
+  theme_classic()
+```
+
+
+
+# Velocyto
+## Data preparation
+```{r}
+bam_list<-data.frame(Barcode=seurat$Barcode,SampleID=seurat$SampleID)
+bam_list$ChipSample<-mapvalues(bam_list$SampleID,from=unique(bam_list$SampleID),to=c("S1","S2","S5","S6","S7","S8","S9","S10","S12","S11","S13","S14","S15","S16","S17","S18"))
+
+bam_list$FileLocation<-paste0("/scratch/c.c1629716/NGS_December2023/05_Analyze/",bam_list$SampleID,"_",bam_list$ChipSample,"_L001/bam/",bam_list$Barcode,".Aligned.out.bam")
+
+bam_list$NewLocation<-paste0("/scratch/c.c1629716/NGS_December2023/velocyto/",bam_list$SampleID,"_",bam_list$Barcode,".Aligned.out.bam")
+
+fwrite(bam_list,file=paste0(PROJECT_DIR,"/bam_list.csv"))
+
+mclapply(1:nrow(bam_list),mc.cores=16,FUN=function(i){
+  file.copy(from=bam_list$FileLocation[i],
+            to=bam_list$NewLocation[i])
+})
+```
+## Seurat analysis
+```{r}
+velocyto_output_neuron_filtered<-readRDS(paste0(SAVE_DIR,"/velocyto_output_neuron_filtered.RDS"))
+velocity_estimate_neuron_filtered<-readRDS(paste0(SAVE_DIR,"/velocity_estimate_neuron_filtered.RDS"))
+
+res1.7_annotation<-fread(file=paste0(ANALYSIS_OUTPUTDIR,"/res1.7 annotation.txt"),data.table=FALSE)
+res1.7_annotation$seurat_clusters<-as.factor(res1.7_annotation$seurat_clusters)
+
+seurat_res1.7[["spliced"]]<-CreateAssayObject(counts=velocyto_output_neuron_filtered$spliced)
+seurat_res1.7[["unspliced"]]<-CreateAssayObject(counts=velocyto_output_neuron_filtered$unspliced)
+
+temp_gene<-c("ISL1","SGCE","DCX")
+
+p<-lapply(c("spliced","unspliced"),FUN=function(x){
+  temp<-GetAssayData(seurat_res1.7,assay=x)[FUN_gene(temp_gene),]
+  ROWNAMES<-rownames(temp)
+  COLNAMES<-colnames(temp)
+  temp<-as.data.frame(temp)
+  rownames(temp)<-ROWNAMES
+  colnames(temp)<-COLNAMES
+  temp$Gene<-FUN_geneid(rownames(temp))
+  temp<-melt(temp,id.vars="Gene")
+  temp$CountType<-x
+  return(temp)
+})%>%
+  rbindlist() %>%
+  inner_join(y=seurat_res1.7@meta.data,by=c("variable"="CellID")) %>%
+  inner_join(y=res1.7_annotation,by="seurat_clusters") %>%
+  ggplot(aes(x=seurat_clusters,y=value,fill=CellType))+
+  geom_violin(scale="width")+
+  facet_grid(CountType+Gene~CellType,scales="free_x",space="free_x")+
+  theme_classic()+
+  scale_fill_manual(values=colour_palette)
+
+
+```
+
+
+# save
+```{r}
+#save.image(file=paste0(SAVE_DIR,"/",Sys.Date(),".RData"))
+
+save(seurat,file=paste0(SAVE_DIR,"/","seurat.RData"))
+save(seurat_coding,file=paste0(SAVE_DIR,"/","seurat_coding.RData"))
+save(seurat_neuron,file=paste0(SAVE_DIR,"/","seurat_neuron.RData"))
+save(seurat_astrocyte,file=paste0(SAVE_DIR,"/","seurat_astrocyte.RData"))
+
+save(seurat_neuron_filtered,file=paste0(SAVE_DIR,"/","seurat_neuron_filtered.RData"))
+save(feature_ncell,file=paste0(SAVE_DIR,"/feature_ncell.RData"))
+save(seurat_normalised,file=paste0(SAVE_DIR,"/","seurat_normalised_integrated.RData"))
+save(seurat_normalised_cluster_list,file=paste0(SAVE_DIR,"/","seurat_normalised_cluster_list.RData"))
+save(seurat_res1.7,file=paste0(SAVE_DIR,"/","seurat_res1.7.RData"))
+save(seurat_res1.7_AUC,file=paste0(SAVE_DIR,"/","seurat_res1.7_AUC.RData"))
+save(seurat_res1.7_AUC_subset,file=paste0(SAVE_DIR,"/","seurat_res1.7_AUC_subset.RData"))
+```
